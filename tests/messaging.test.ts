@@ -71,3 +71,25 @@ describe('WhatsApp Cloud API', () => {
     expect(verifyChallenge(new URLSearchParams({ 'hub.mode': 'subscribe', 'hub.verify_token': 'errado', 'hub.challenge': '1' }), acc)).toBeNull();
   });
 });
+
+describe.skipIf(process.env.RUN_DB_TESTS !== '1')('modelos com a empresa (banco)', () => {
+  it('render usa o modelo personalizado da empresa ou o padrão', async () => {
+    const { prisma } = await import('@/lib/db');
+    const { render } = await import('@/server/services/emailTemplates');
+    const company = await prisma.company.findFirst({ where: { cnpj: '11444777000161' } });
+    const before = await prisma.emailTemplate.findUnique({ where: { companyId_key: { companyId: company!.id, key: 'boas_vindas' } } });
+    try {
+      await prisma.emailTemplate.deleteMany({ where: { companyId: company!.id, key: 'boas_vindas' } });
+      const d = await render('boas_vindas', { cliente: 'Ana' }, company!.id);
+      expect(d.subject).toBe(`Bem-vindo(a) à ${company!.tradeName || company!.name}!`);
+      expect(d.html).toContain(company!.logoColor);
+      await prisma.emailTemplate.create({ data: { companyId: company!.id, key: 'boas_vindas', subject: 'Oi {{cliente}}', html: '<p>Personalizado {{cliente}}</p>' } });
+      const c = await render('boas_vindas', { cliente: 'Ana & Bia' }, company!.id);
+      expect(c.subject).toBe('Oi Ana & Bia');
+      expect(c.html).toContain('Personalizado Ana &amp; Bia');
+    } finally {
+      await prisma.emailTemplate.deleteMany({ where: { companyId: company!.id, key: 'boas_vindas' } });
+      if (before) await prisma.emailTemplate.create({ data: { companyId: before.companyId, key: before.key, subject: before.subject, html: before.html, active: before.active } });
+    }
+  });
+});

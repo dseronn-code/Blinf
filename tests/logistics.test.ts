@@ -142,3 +142,32 @@ describe('simulação (sem conta conectada)', () => {
     expect(o.every((x) => x.simulated)).toBe(true);
   });
 });
+
+describe.skipIf(process.env.RUN_DB_TESTS !== '1')('cotação com conta conectada (banco)', () => {
+  it('sem conta usa a simulação; com Melhor Envio conectado usa as opções reais', async () => {
+    const { prisma } = await import('@/lib/db');
+    const { quoteFreightDetailed } = await import('@/server/services/logistics');
+    const { saveCredentials } = await import('@/server/integrations/accounts');
+    const company = await prisma.company.findFirst({ where: { cnpj: '11444777000161' } });
+    const before = await prisma.integrationAccount.findUnique({ where: { companyId_provider: { companyId: company!.id, provider: 'MELHOR_ENVIO' } } });
+    if (before?.status === 'CONECTADO') return; // ambiente com conta real: não mexe
+    const params = { fromZip: company!.zip || '01001000', toZip: '22250040', weight: 1, value: 100 };
+    const sim = await quoteFreightDetailed(company!.id, params);
+    expect(sim.real).toBe(false);
+    try {
+      const acc = await saveCredentials(company!.id, 'MELHOR_ENVIO', { environment: 'SANDBOX', values: { token: 'tok', email: 'dev@loja.com' } });
+      await prisma.integrationAccount.update({ where: { id: acc.id }, data: { status: 'CONECTADO' } });
+      setHttpMock(() => ({ status: 200, data: ME_QUOTE }));
+      const real = await quoteFreightDetailed(company!.id, params);
+      expect(real.real).toBe(true);
+      expect(real.options.map((o) => o.service)).toEqual(['PAC', 'SEDEX']);
+      setHttpMock(() => ({ status: 401, data: { message: 'Unauthenticated.' } }));
+      const failed = await quoteFreightDetailed(company!.id, params);
+      expect(failed.real).toBe(false); // falha do provedor: segue com a simulação e informa o erro
+      expect(failed.errors[0]).toContain('Unauthenticated');
+    } finally {
+      if (before) await prisma.integrationAccount.update({ where: { id: before.id }, data: { status: before.status, secrets: before.secrets, settings: before.settings as object, environment: before.environment } });
+      else await prisma.integrationAccount.deleteMany({ where: { companyId: company!.id, provider: 'MELHOR_ENVIO' } });
+    }
+  });
+});

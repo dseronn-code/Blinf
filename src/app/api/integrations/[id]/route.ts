@@ -2,13 +2,15 @@ import { prisma } from '@/lib/db';
 import { route } from '@/server/http';
 import { fail } from '@/server/errors';
 import { emit } from '@/server/events';
+import { realInfo } from '@/server/services/marketplace';
 
 export const GET = route('integracoes', 'view', async ({ ctx, params }) => {
   const ch = await prisma.salesChannel.findFirst({ where: { id: params.id, companyId: ctx.companyId }, include: { logs: { orderBy: { createdAt: 'desc' }, take: 100 } } });
   if (!ch) fail(404, 'Canal não encontrado');
   const listings = await prisma.listing.findMany({ where: { channelId: ch!.id }, include: { product: { select: { sku: true, name: true, price: true } } }, orderBy: { title: 'asc' } });
   const orders = await prisma.salesOrder.findMany({ where: { channelId: ch!.id }, include: { customer: { select: { name: true } } }, orderBy: { number: 'desc' }, take: 30 });
-  return { ...ch, listings, orders };
+  const { accessToken: _t, ...config } = (ch!.config || {}) as Record<string, unknown>;
+  return { ...ch, config, real: await realInfo(ch!), listings, orders };
 });
 
 export const PUT = route('integracoes', 'edit', async ({ ctx, params, body }) => {

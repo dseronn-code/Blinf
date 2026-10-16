@@ -85,7 +85,7 @@ export default function Storefront() {
           {done.payment.status === 'APROVADO' ? <p className="mt-4 rounded bg-green-50 p-3 text-green-800">Pagamento aprovado no cartão. Você receberá o código de rastreio por e-mail.</p> : (
             <div className="mt-4 space-y-3 rounded-xl border bg-white p-4">
               {done.payment.method === 'PIX' && <><img src={`/api/public/qr?data=${encodeURIComponent(done.payment.pix)}`} className="mx-auto h-44 w-44" alt="Pix" /><button className="w-full break-all rounded bg-gray-100 p-2 font-mono text-[10px]" onClick={() => { navigator.clipboard.writeText(done.payment.pix); toast.success('Copiado'); }}>{done.payment.pix}</button></>}
-              <a href={done.payment.link} target="_blank" className="block rounded-lg py-3 font-semibold text-white" style={{ background: primary }}>{done.payment.method === 'PIX' ? 'Já paguei / simular pagamento' : 'Ver boleto e simular pagamento'}</a>
+              <a href={done.payment.link} target="_blank" className="block rounded-lg py-3 font-semibold text-white" style={{ background: primary }}>{done.payment.simulated === false || done.payment.redirectUrl ? (done.payment.method === 'PIX' ? 'Abrir página de pagamento' : done.payment.method === 'BOLETO' ? 'Ver boleto' : 'Pagar com cartão') : done.payment.method === 'PIX' ? 'Já paguei / simular pagamento' : 'Ver boleto e simular pagamento'}</a>
             </div>
           )}
           <button className="mt-6 text-sm underline" onClick={() => { setDone(null); setCheckout(false); }}>Continuar comprando</button>
