@@ -33,8 +33,8 @@ export default function InvoicePage() {
           {inv.status !== 'CANCELADA' && <Button variant="outline" onClick={() => setCancel(true)}><XCircle /> Cancelar</Button>}
         </>} />
       {inv.status === 'REJEITADA' && <div className="mb-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800"><b>Rejeição {inv.rejectionCode}:</b> {inv.rejectionReason}<div className="mt-1 text-xs">Corrija o cadastro (cliente, produto, empresa ou certificado) e transmita novamente.</div></div>}
-      <div className="grid gap-3 xl:grid-cols-[1fr_360px]">
-        <div className="space-y-3">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="min-w-0 space-y-3">
           <Card><CardContent className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <KV label="Destinatário" value={inv.customerName} /><KV label="CPF/CNPJ" value={fmtDoc(inv.customerDoc) || '—'} /><KV label="UF destino" value={inv.customerUf} /><KV label="Emissão" value={fmtDateTime(inv.issueDate)} />
             {inv.accessKey && <div className="col-span-2 md:col-span-4"><KV label="Chave de acesso" value={<span className="font-mono">{formatAccessKey(inv.accessKey)}</span>} /></div>}

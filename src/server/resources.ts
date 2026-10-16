@@ -164,6 +164,7 @@ export const RESOURCES: Record<string, ResourceDef> = {
     fields: ['name', 'email', 'roleId', 'active', 'password', 'companyIds'], booleans: ['active'],
     beforeSave: async (d, ctx, id) => {
       if (d.email) d.email = String(d.email).toLowerCase().trim();
+      if (d.roleId && !(await prisma.role.findFirst({ where: { id: d.roleId, organizationId: ctx.orgId } }))) fail(400, 'Perfil inválido');
       if (d.password) {
         if (String(d.password).length < 6) fail(400, 'A senha deve ter ao menos 6 caracteres');
         d.passwordHash = await bcrypt.hash(String(d.password), 10);

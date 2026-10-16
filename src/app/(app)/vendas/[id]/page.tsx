@@ -100,8 +100,8 @@ export default function SalesOrderPage() {
       )}
       {o.status === 'CANCELADO' && <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">Pedido cancelado em {fmtDateTime(o.cancelledAt)}. {o.cancelReason}</div>}
 
-      <div className="grid gap-3 xl:grid-cols-[1fr_340px]">
-        <div className="space-y-3">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 space-y-3">
           <Card><CardContent className="grid grid-cols-1 gap-3 md:grid-cols-4">
             <Field label="Cliente *" className="md:col-span-2"><EntityPicker disabled={!editable} endpoint="/api/r/contacts?type=CLIENTE" value={o.customerId} label={o.customerLabel} map={contactOption} onChange={(v, raw) => setO({ ...o, customerId: v, customerLabel: raw?.name, priceListId: raw?.priceListId || o.priceListId, sellerId: raw?.sellerId || o.sellerId })} /></Field>
             <Field label="Data"><Input disabled={!editable} type="date" value={o.date || toInputDate(new Date())} onChange={(e) => setO({ ...o, date: e.target.value })} /></Field>

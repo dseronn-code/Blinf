@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Banknote, CreditCard, QrCode, ScanBarcode, Trash2, Minus, Plus, Printer, Lock, Unlock, ArrowDownToLine, ArrowUpFromLine, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, useApi, useAction, openFile } from '@/lib/api';
@@ -194,7 +194,6 @@ export default function PDV() {
         {cash?.action === 'close' && <p className="mb-2 text-sm">Dinheiro esperado em caixa: <b>{money(data.summary?.expectedCash)}</b>. Informe o valor contado:</p>}
         <Input type="number" step="0.01" value={cashAmount} onChange={(e) => setCashAmount(e.target.value)} autoFocus placeholder="Valor (R$)" />
       </Dialog>
-      {useMemo(() => null, [])}
     </div>
   );
 }

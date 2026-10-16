@@ -44,8 +44,8 @@ export default function ServiceOrderPage() {
         {!isNew && editable && <Button variant="outline" onClick={() => setInv({ installments: 1, paymentMethod: 'PIX', emitNfse: true })}><Receipt /> Faturar OS</Button>}
         {editable && <Button onClick={save}><Save /> Salvar</Button>}
       </>} />
-      <div className="grid gap-3 xl:grid-cols-[1fr_340px]">
-        <div className="space-y-3">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 space-y-3">
           <Card><CardContent className="grid grid-cols-1 gap-3 md:grid-cols-4">
             <Field label="Cliente *" className="md:col-span-2"><EntityPicker disabled={!editable} endpoint="/api/r/contacts?type=CLIENTE" value={os.customerId} label={os.customerLabel} map={contactOption} onChange={(v, raw) => setOs({ ...os, customerId: v, customerLabel: raw?.name })} /></Field>
             <Field label="Técnico"><Select disabled={!editable} value={os.technicianId || ''} onChange={(e) => setOs({ ...os, technicianId: e.target.value })}><option value="">—</option>{techs?.rows.map((t: any) => <option key={t.id} value={t.id}>{t.name}</option>)}</Select></Field>

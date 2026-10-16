@@ -33,7 +33,7 @@ export default function LoginPage() {
           <h1 className="text-4xl font-bold leading-tight">Gestão completa para o seu negócio crescer.</h1>
           <p className="mt-4 max-w-md text-white/70">Vendas multicanal, estoque, notas fiscais, financeiro, PDV, produção, logística e loja virtual — tudo integrado em um só lugar.</p>
           <ul className="mt-6 grid max-w-md grid-cols-2 gap-2 text-sm text-white/80">
-            {['NF-e, NFC-e e NFS-e', 'Mercado Livre, Shopee, Amazon…', 'Conta digital, Pix e boletos', '30 automações prontas', 'Multiempresa (multi-CNPJ)', 'Assistente de IA'].map((t) => <li key={t}>✓ {t}</li>)}
+            {['NF-e, NFC-e e NFS-e', 'Mercado Livre, Shopee, Amazon…', 'Conta digital, Pix e boletos', '31 automações prontas', 'Multiempresa (multi-CNPJ)', 'Assistente de IA'].map((t) => <li key={t}>✓ {t}</li>)}
           </ul>
         </div>
         <p className="text-xs text-white/40">Ambiente de demonstração — integrações com SEFAZ, bancos e marketplaces são simuladas.</p>
