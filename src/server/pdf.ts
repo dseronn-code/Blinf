@@ -351,7 +351,7 @@ export async function shippingLabelPdf(list: { shipment: Shipment; order: SalesO
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  for (const { shipment, order, company } of list) {
+  for (const { shipment, order, company } of list) for (let vol = 1; vol <= Math.max(1, shipment.volumes || 1); vol++) {
     const page = doc.addPage([283.46, 425.2]);
     const c = { page, font, bold };
     const to = (order.shipTo || {}) as Record<string, string>;
@@ -359,8 +359,8 @@ export async function shippingLabelPdf(list: { shipment: Shipment; order: SalesO
     text(c, shipment.carrier.toUpperCase(), 14, 398, 14, true);
     text(c, shipment.service, 14, 384, 9);
     text(c, `Pedido ${order.number}${order.externalId ? ' / ' + order.externalId : ''}`, 150, 398, 7);
-    text(c, `Peso: ${num(shipment.weight, 3)} kg`, 150, 388, 7);
-    text(c, `Volume 1/1`, 150, 378, 7);
+    text(c, `Peso: ${num(shipment.weight / Math.max(1, shipment.volumes || 1), 3)} kg`, 150, 388, 7);
+    text(c, `Volume ${vol}/${Math.max(1, shipment.volumes || 1)}`, 150, 378, 9, true);
     if (shipment.trackingCode) {
       const img = await barcode(doc, 'code128', shipment.trackingCode, { height: 14 });
       if (img) page.drawImage(img, { x: 20, y: 300, width: 243, height: 62 });

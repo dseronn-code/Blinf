@@ -1,13 +1,15 @@
 import { prisma } from '@/lib/db';
 import { route } from '@/server/http';
 import { fail } from '@/server/errors';
+import { setAllocations } from '@/server/services/financeExtras';
 
 export const GET = route('financeiro', 'view', async ({ ctx, params }) => {
   const e = await prisma.financialEntry.findFirst({ where: { id: params.id, companyId: { in: ctx.companyIds } } });
   if (!e) fail(404, 'Lançamento não encontrado');
   const transactions = await prisma.bankTransaction.findMany({ where: { entryId: e!.id }, include: { bankAccount: { select: { name: true } } } });
   const links = await prisma.paymentLink.findMany({ where: { entryId: e!.id } });
-  return { ...e, transactions, links };
+  const allocations = await prisma.costAllocation.findMany({ where: { entryId: e!.id } });
+  return { ...e, transactions, links, allocations };
 });
 
 export const PUT = route('financeiro', 'edit', async ({ ctx, params, body }) => {
@@ -19,6 +21,7 @@ export const PUT = route('financeiro', 'edit', async ({ ctx, params, body }) => 
   if (body.amount != null) data.amount = Number(body.amount);
   if (body.dueDate) data.dueDate = new Date(body.dueDate);
   if (body.competenceDate) data.competenceDate = new Date(body.competenceDate);
+  if (Array.isArray(body.allocations)) await setAllocations(params.id, body.allocations);
   return prisma.financialEntry.update({ where: { id: params.id }, data });
 });
 

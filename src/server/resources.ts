@@ -147,6 +147,16 @@ export const RESOURCES: Record<string, ResourceDef> = {
       return d;
     },
   },
+  coupons: {
+    model: 'coupon', scope: 'company', module: 'loja', search: ['code'], orderBy: { createdAt: 'desc' },
+    fields: ['code', 'type', 'value', 'minAmount', 'maxUses', 'validUntil', 'active'], numbers: ['value', 'minAmount', 'maxUses'], dates: ['validUntil'], booleans: ['active'],
+    beforeSave: (d) => {
+      if (d.code) d.code = String(d.code).trim().toUpperCase().replace(/\s+/g, '');
+      if (d.type && !['PERCENTUAL', 'VALOR', 'FRETE_GRATIS'].includes(d.type)) fail(400, 'Tipo de cupom inválido');
+      if (d.type === 'PERCENTUAL' && (d.value <= 0 || d.value > 100)) fail(400, 'Percentual deve estar entre 0 e 100');
+      return d;
+    },
+  },
   'pos-terminals': {
     model: 'posTerminal', scope: 'company', module: 'financeiro', search: ['name', 'serial'], orderBy: { name: 'asc' },
     fields: ['name', 'serial', 'acquirer', 'bankAccountId', 'debitFee', 'creditFee', 'pixFee', 'active'], numbers: ['debitFee', 'creditFee', 'pixFee'], booleans: ['active'],

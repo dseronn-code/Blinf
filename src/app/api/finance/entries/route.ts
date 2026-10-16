@@ -3,6 +3,7 @@ import { route } from '@/server/http';
 import { fail } from '@/server/errors';
 import { round2, startOfDay } from '@/lib/utils';
 import { createEntries, effectiveStatus } from '@/server/services/finance';
+import { setAllocations } from '@/server/services/financeExtras';
 
 export const GET = route('financeiro', 'view', async ({ ctx, query }) => {
   const where: any = { companyId: ctx.consolidated ? { in: ctx.companyIds } : ctx.companyId };
@@ -47,5 +48,6 @@ export const POST = route('financeiro', 'edit', async ({ ctx, body }) => {
     intervalDays: 30, origin: 'MANUAL', chartAccountId: body.chartAccountId || null, costCenterId: body.costCenterId || null, paymentMethod: body.paymentMethod || null, documentNumber: body.documentNumber || null,
     competenceDate: body.competenceDate ? new Date(body.competenceDate) : undefined, notes: body.notes,
   });
+  if (Array.isArray(body.allocations) && body.allocations.length) for (const e of entries as { id: string }[]) await setAllocations(e.id, body.allocations);
   return { ok: true, entries };
 });

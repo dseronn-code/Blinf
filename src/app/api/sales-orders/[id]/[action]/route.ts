@@ -6,6 +6,7 @@ import {
   invoiceOrder, markInvoicedWithoutNote, cancelOrder, reserveOrder, releaseOrderReservation, postOrderStock, postOrderFinancial, postCommission, setOrderStatus,
 } from '@/server/services/sales';
 import { createShipment } from '@/server/services/logistics';
+import { splitOrder } from '@/server/services/operations';
 import { tablePdf } from '@/server/pdf';
 import { money } from '@/lib/utils';
 
@@ -43,6 +44,8 @@ export const POST = route('vendas', 'edit', async ({ ctx, params, body }) => {
       return { ok: true, commission: await postCommission(a, id) };
     case 'status':
       return setOrderStatus(a, id, body?.status);
+    case 'split':
+      return splitOrder(a, id, body?.items || []);
     case 'shipment':
       return createShipment(a, id, body?.option || null);
     default:

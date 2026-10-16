@@ -9,8 +9,8 @@ import { fail } from '../errors';
 import { emit } from '../events';
 import type { Ctx } from '../context';
 
-const FIELDS = ['sku', 'name', 'kind', 'gtin', 'unit', 'ncm', 'cest', 'origin', 'brand', 'categoryId', 'price', 'costPrice', 'ipiRate', 'weight', 'width', 'height', 'length', 'controlsStock', 'controlsLot', 'minStock', 'maxStock', 'location', 'supplierId', 'imageUrl', 'description', 'active', 'featured', 'attributes'];
-const NUM = ['origin', 'price', 'costPrice', 'ipiRate', 'weight', 'width', 'height', 'length', 'minStock', 'maxStock'];
+const FIELDS = ['sku', 'name', 'kind', 'gtin', 'unit', 'ncm', 'cest', 'origin', 'brand', 'categoryId', 'price', 'costPrice', 'ipiRate', 'weight', 'width', 'height', 'length', 'controlsStock', 'controlsLot', 'minStock', 'maxStock', 'location', 'supplierId', 'imageUrl', 'images', 'mvaST', 'scaleCode', 'description', 'active', 'featured', 'attributes'];
+const NUM = ['origin', 'mvaST', 'price', 'costPrice', 'ipiRate', 'weight', 'width', 'height', 'length', 'minStock', 'maxStock'];
 const BOOL = ['controlsStock', 'controlsLot', 'active', 'featured'];
 
 export async function saveProduct(ctx: Pick<Ctx, 'orgId' | 'companyId'>, body: Record<string, any>, id?: string) {
@@ -26,6 +26,8 @@ export async function saveProduct(ctx: Pick<Ctx, 'orgId' | 'companyId'>, body: R
   if (!id && !data.sku) fail(400, 'Informe o código (SKU)');
   if (!id && !data.name) fail(400, 'Informe a descrição do produto');
   if (data.ncm) data.ncm = String(data.ncm).replace(/\D/g, '');
+  if ('images' in data) data.images = Array.isArray(data.images) ? data.images.filter(Boolean).slice(0, 10) : [];
+  if (data.scaleCode) data.scaleCode = String(data.scaleCode).replace(/\D/g, '').padStart(5, '0').slice(-5);
   if (data.gtin === 'GERAR') data.gtin = buildEan13('789' + String(Date.now()).slice(-9));
   const components = Array.isArray(body.components) ? body.components.filter((c: { componentId?: string; quantity?: number }) => c.componentId && Number(c.quantity) > 0) : null;
   if (components && (data.kind === 'KIT' || data.kind === 'FABRICADO' || !data.kind)) {

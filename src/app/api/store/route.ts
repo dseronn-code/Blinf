@@ -13,11 +13,13 @@ export const GET = route('loja', 'view', async ({ ctx }) => {
 });
 
 export const PUT = route('loja', 'edit', async ({ ctx, body }) => {
-  const fields = ['slug', 'name', 'published', 'primaryColor', 'accentColor', 'logoText', 'bannerTitle', 'bannerSubtitle', 'bannerImage', 'aboutText', 'whatsapp', 'freeShippingAbove', 'pixDiscount', 'sections', 'priceListId', 'warehouseId'];
+  const fields = ['slug', 'name', 'published', 'primaryColor', 'accentColor', 'logoText', 'bannerTitle', 'bannerSubtitle', 'bannerImage', 'aboutText', 'whatsapp', 'freeShippingAbove', 'pixDiscount', 'sections', 'priceListId', 'warehouseId', 'freeShippingUfs', 'customDomain', 'seoTitle', 'seoDescription'];
   const data: any = {};
   for (const f of fields) if (f in body) data[f] = body[f] === '' ? null : body[f];
   if ('freeShippingAbove' in data) data.freeShippingAbove = Number(data.freeShippingAbove) || 0;
   if ('pixDiscount' in data) data.pixDiscount = Number(data.pixDiscount) || 0;
+  if ('freeShippingUfs' in data) data.freeShippingUfs = (Array.isArray(data.freeShippingUfs) ? data.freeShippingUfs : String(data.freeShippingUfs || '').split(/[\s,;]+/)).map((u: string) => u.trim().toUpperCase()).filter((u: string) => /^[A-Z]{2}$/.test(u));
+  if (data.customDomain) data.customDomain = String(data.customDomain).toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   if (data.slug) data.slug = String(data.slug).toLowerCase().replace(/[^a-z0-9-]/g, '');
   return prisma.store.update({ where: { companyId: ctx.companyId }, data });
 });

@@ -2,6 +2,7 @@
  * Loja virtual nativa: catálogo público com estoque/preço do ERP e
  * checkout que gera cliente + pedido (origem LOJA) + cobrança.
  */
+import crypto from 'crypto';
 import { prisma } from '@/lib/db';
 import { round2, onlyDigits, randomDigits, addDays } from '@/lib/utils';
 import { isValidCPF, isValidCNPJ, buildPixPayload } from '@/lib/br';
@@ -32,7 +33,7 @@ export async function storeCatalog(slug: string) {
   for (const p of products) {
     const price = await resolvePrice(prisma, p.id, store.priceListId);
     out.push({
-      id: p.id, sku: p.sku, name: p.name, description: p.description, kind: p.kind, featured: p.featured, imageUrl: p.imageUrl, category: p.category, price, compareAt: price < p.price ? p.price : null,
+      id: p.id, sku: p.sku, name: p.name, description: p.description, kind: p.kind, featured: p.featured, imageUrl: p.imageUrl || p.images[0] || null, images: p.images, category: p.category, price, compareAt: price < p.price ? p.price : null,
       weight: p.weight, available: Math.max(0, avail.get(p.id)?.available ?? 0), attributes: p.attributes,
       variations: await Promise.all(p.variations.map(async (v) => ({ id: v.id, sku: v.sku, name: v.name, attributes: v.attributes, price: await resolvePrice(prisma, v.id, store.priceListId), available: Math.max(0, avail.get(v.id)?.available ?? 0) }))),
     });
@@ -110,4 +111,59 @@ export async function storeCheckout(slug: string, input: CheckoutInput) {
     payment = { ...payment, link: `/pagar/${slugLink}`, pix, entryId: entry.id };
   }
   return { order: { id: order.id, number: order.number, total: order.total, externalId: order.externalId }, payment };
+}
+
+// ---------------------------------------------------------------------------
+// Área do cliente (acompanhamento de pedidos sem senha: e-mail + CPF/CNPJ)
+// ---------------------------------------------------------------------------
+const SECRET = () => process.env.NEXTAUTH_SECRET || 'gestaopro-dev-secret';
+
+/** Token assinado (HMAC) com validade de 30 dias guardado em cookie httpOnly */
+export function signCustomerToken(slug: string, contactId: string) {
+  const exp = Date.now() + 30 * 86400_000;
+  const payload = `${slug}.${contactId}.${exp}`;
+  return `${payload}.${crypto.createHmac('sha256', SECRET()).update(payload).digest('hex').slice(0, 32)}`;
+}
+
+export function verifyCustomerToken(slug: string, token: string | undefined) {
+  if (!token) return null;
+  const [s, id, exp, sig] = token.split('.');
+  if (s !== slug || !id || Number(exp) < Date.now()) return null;
+  const good = crypto.createHmac('sha256', SECRET()).update(`${s}.${id}.${exp}`).digest('hex').slice(0, 32);
+  return sig && sig.length === good.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good)) ? id : null;
+}
+
+export async function storeCustomerLogin(slug: string, email: string, document: string) {
+  const { company } = await storeBySlug(slug);
+  const doc = onlyDigits(document);
+  const contact = await prisma.contact.findFirst({ where: { organizationId: company.organizationId, document: doc, email: { equals: String(email || '').trim(), mode: 'insensitive' } } });
+  if (!contact || !(await prisma.salesOrder.count({ where: { companyId: company.id, customerId: contact.id } }))) fail(401, 'Não encontramos pedidos com este e-mail e CPF/CNPJ');
+  return contact!;
+}
+
+const STATUS_TXT: Record<string, string> = { ABERTO: 'Aguardando pagamento', FATURADO: 'Pagamento aprovado / faturado', SEPARADO: 'Em separação', ENVIADO: 'Enviado', ENTREGUE: 'Entregue', CANCELADO: 'Cancelado' };
+
+export async function storeCustomerOrders(slug: string, contactId: string) {
+  const { company } = await storeBySlug(slug);
+  const contact = await prisma.contact.findUnique({ where: { id: contactId }, select: { name: true, email: true, document: true } });
+  const orders = await prisma.salesOrder.findMany({ where: { companyId: company.id, customerId: contactId }, include: { items: { select: { description: true, quantity: true, total: true } }, shipments: { select: { carrier: true, service: true, trackingCode: true, status: true, events: true } } }, orderBy: { date: 'desc' }, take: 50 });
+  const ids = orders.map((o) => o.id);
+  const [invoices, links, returns] = await Promise.all([
+    prisma.invoice.findMany({ where: { salesOrderId: { in: ids }, status: 'AUTORIZADA' }, select: { id: true, salesOrderId: true, number: true, accessKey: true, model: true } }),
+    prisma.paymentLink.findMany({ where: { salesOrderId: { in: ids }, status: 'ATIVO' }, select: { salesOrderId: true, slug: true } }),
+    prisma.salesReturn.findMany({ where: { salesOrderId: { in: ids } }, select: { salesOrderId: true, number: true, kind: true, status: true, total: true } }),
+  ]);
+  return {
+    customer: contact,
+    orders: orders.map((o) => ({
+      id: o.id, number: o.number, externalId: o.externalId, date: o.date, status: o.status, statusText: STATUS_TXT[o.status] || o.status, total: o.total, paymentMethod: o.paymentMethod, items: o.items, shipments: o.shipments,
+      invoice: invoices.find((i) => i.salesOrderId === o.id) || null, payLink: links.find((l) => l.salesOrderId === o.id)?.slug || null, returns: returns.filter((r) => r.salesOrderId === o.id),
+    })),
+  };
+}
+
+/** Resolve domínio próprio → slug da loja (usado pelo middleware) */
+export async function storeByDomain(host: string) {
+  const s = await prisma.store.findFirst({ where: { customDomain: host.toLowerCase(), published: true }, select: { slug: true } });
+  return s?.slug || null;
 }

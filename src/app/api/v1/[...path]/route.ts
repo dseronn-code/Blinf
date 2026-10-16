@@ -12,6 +12,7 @@ import { createOrder, invoiceOrder, cancelOrder } from '@/server/services/sales'
 import { saveProduct } from '@/server/services/products';
 import { emit } from '@/server/events';
 import { onlyDigits } from '@/lib/utils';
+import { rateLimit } from '@/lib/rateLimit';
 
 type P = { params: Promise<{ path: string[] }> };
 
@@ -22,6 +23,9 @@ async function auth(req: Request) {
   const hash = crypto.createHash('sha256').update(key).digest('hex');
   const k = await prisma.apiKey.findUnique({ where: { keyHash: hash } });
   if (!k || !k.active) throw new HttpError(401, 'Chave de API inválida ou revogada');
+  // Limite: 120 requisições por minuto por chave
+  const rl = rateLimit(`api:${k.id}`, Number(process.env.API_RATE_LIMIT || 120), 60_000);
+  if (!rl.ok) throw new HttpError(429, `Limite de requisições excedido. Tente novamente em ${Math.ceil((rl.reset - Date.now()) / 1000)} s`);
   await prisma.apiKey.update({ where: { id: k.id }, data: { lastUsedAt: new Date() } });
   const company = await prisma.company.findUnique({ where: { id: k.companyId }, include: { organization: true } });
   return { companyId: company!.id, orgId: company!.organizationId, stockMode: company!.organization.stockMode, userName: `API (${k.name})` };

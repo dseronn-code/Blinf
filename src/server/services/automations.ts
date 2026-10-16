@@ -260,6 +260,53 @@ export const AUTOMATIONS: AutomationDef[] = [
     },
   },
   {
+    key: 'LIQUIDAR_RECEBIVEIS_CARTAO', group: 'Financeiro', event: 'daily.routine', name: 'Liquidar recebíveis de cartão no vencimento',
+    description: 'Rotina diária: transfere da conta "Recebíveis de cartão" para a conta bancária as parcelas de débito/crédito que venceram (agenda da adquirente).',
+    run: async (_p, a) => {
+      const { settleReceivables } = await import('./financeExtras');
+      const r = await settleReceivables(a);
+      return r.settled ? `${r.settled} parcela(s) liquidada(s) — ${money(r.net)}` : 'Nenhum recebível vencido';
+    },
+  },
+  {
+    key: 'AVISO_DEVOLUCAO', group: 'Vendas', event: 'order.returned', name: 'Avisar cliente sobre a devolução/troca',
+    description: 'Ao registrar uma devolução ou troca, envia ao cliente o comprovante com os itens, a NF-e de devolução e o reembolso/crédito.',
+    run: async (p, a) => {
+      const r = await prisma.salesReturn.findUnique({ where: { id: str(p.returnId) } });
+      if (!r) return;
+      const o = await prisma.salesOrder.findUnique({ where: { id: r.salesOrderId }, include: { customer: true } });
+      const items = (r.items as { description: string; quantity: number }[]).map((i) => `- ${i.quantity}x ${i.description}`).join('\n');
+      const how = r.kind === 'TROCA' ? 'Um novo pedido de troca foi gerado e será enviado em breve.' : r.refundMethod === 'CREDITO' ? 'O valor foi abatido dos seus títulos em aberto.' : r.refundMethod === 'ESTORNO' ? 'O reembolso foi programado e será creditado em até 5 dias úteis.' : '';
+      await sendMessage(a.companyId, { to: o?.customer.email, subject: `${r.kind === 'TROCA' ? 'Troca' : 'Devolução'} nº ${r.number} registrada`, body: `Olá, ${o?.customer.name}.\n\nRegistramos a ${r.kind === 'TROCA' ? 'troca' : 'devolução'} referente ao pedido nº ${o?.number}:\n${items}\nValor: ${money(r.total)}\n${how}`, related: `return:${r.id}` });
+      await notify(a.companyId, 'Devolução registrada', `Devolução nº ${r.number} do pedido ${o?.number} — ${money(r.total)}`, { link: '/vendas/devolucoes' });
+      return `Cliente avisado (${o?.customer.email || 'sem e-mail'})`;
+    },
+  },
+  {
+    key: 'AVISO_TRANSFERENCIA_FILIAL', group: 'Estoque', event: 'transfer.created', name: 'Notificar filial sobre transferência recebida',
+    description: 'Quando uma empresa do grupo transfere mercadoria, a empresa de destino recebe notificação com a NF-e de transferência.',
+    run: async (p) => {
+      const t = await prisma.companyTransfer.findUnique({ where: { id: str(p.transferId) } });
+      if (!t) return;
+      const from = await prisma.company.findUnique({ where: { id: t.fromCompanyId }, select: { tradeName: true } });
+      await notify(t.toCompanyId, 'Transferência recebida', `${from?.tradeName} transferiu mercadorias (${money(t.total)}) — nº ${t.number}. Estoque já disponível.`, { link: '/estoque/transferencias' });
+      return 'Filial de destino notificada';
+    },
+  },
+  {
+    key: 'RELATORIO_INVENTARIO', group: 'Estoque', event: 'inventory.finished', name: 'Resumo do inventário concluído',
+    description: 'Ao concluir um inventário, notifica o resultado (itens ajustados, divergência em valor) para o gestor.',
+    run: async (p, a) => {
+      const c = await prisma.inventoryCount.findUnique({ where: { id: str(p.inventoryId) }, include: { items: true } });
+      if (!c) return;
+      const div = c.items.filter((i) => i.counted !== null && Math.abs(i.counted - i.expected) > 1e-9);
+      const prods = await prisma.product.findMany({ where: { id: { in: div.map((d) => d.productId) } }, select: { id: true, costPrice: true } });
+      const value = round2(div.reduce((s, d) => s + ((d.counted || 0) - d.expected) * (prods.find((x) => x.id === d.productId)?.costPrice || 0), 0));
+      await notify(a.companyId, `Inventário nº ${c.number} concluído`, `${div.length} item(ns) com divergência · impacto ${money(value)}`, { level: value < 0 ? 'warning' : 'info', link: '/estoque/inventario' });
+      return `${div.length} divergência(s), impacto ${money(value)}`;
+    },
+  },
+  {
     key: 'CONTAS_A_PAGAR_HOJE', group: 'Financeiro', event: 'daily.routine', name: 'Avisar contas a pagar do dia',
     description: 'Rotina diária: avisa as contas a pagar que vencem hoje.',
     run: async (_p, a) => {
