@@ -1,8 +1,10 @@
 'use client';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, Save, ArrowLeft } from 'lucide-react';
-import { useApi, useAction, api } from '@/lib/api';
+import { Plus, Trash2, Save, ArrowLeft, ShieldCheck, Download, UserX, ChevronDown } from 'lucide-react';
+import { useApi, useAction, api, openFile } from '@/lib/api';
+import { PromptDialog } from '@/components/common/prompt';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from '@/components/ui/dropdown';
 import { PageHeader, Field, DataTable } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea, Checkbox } from '@/components/ui/input';
@@ -26,6 +28,12 @@ export default function ContactForm() {
   const { data: orders } = useApi<any>(isNew ? null : `/api/sales-orders?customerId=${id}&pageSize=10`);
   const { data: fin } = useApi<any>(isNew ? null : `/api/finance/entries?contactId=${id}&status=EM_ABERTO`);
   const [c, setC] = useState<any>(empty);
+  const [anon, setAnon] = useState(false);
+  const anonymize = async (text: string) => {
+    if (text.trim() !== 'ANONIMIZAR') { toast.error('Digite ANONIMIZAR (em maiúsculas) para confirmar'); return; }
+    const r = await act<{ ok: boolean; name: string }>('POST', `/api/contacts/${id}/lgpd`, { confirm: 'ANONIMIZAR' }, false);
+    if (r) toast.success(`Dados pessoais anonimizados${r.name ? ` — contato agora exibido como "${r.name}"` : ''}`);
+  };
   useEffect(() => { if (data) setC({ ...data, birthDate: toInputDate(data.birthDate) }); }, [data]);
   const set = (k: string, v: unknown) => setC((p: any) => ({ ...p, [k]: v }));
 
@@ -45,7 +53,16 @@ export default function ContactForm() {
   void api;
   return (
     <div>
-      <PageHeader title={isNew ? 'Novo contato' : c.name} description={isNew ? 'Cliente, fornecedor ou transportadora' : c.types?.join(' · ')} actions={<><Button variant="outline" onClick={() => router.push('/cadastros/contatos')}><ArrowLeft /> Voltar</Button>{!isNew && <Button variant="outline" onClick={async () => { if (confirm('Excluir contato?')) { const r = await act('DELETE', `/api/r/contacts/${id}`); if (r) router.push('/cadastros/contatos'); } }}><Trash2 /> Excluir</Button>}<Button onClick={save}><Save /> Salvar</Button></>} />
+      <PageHeader title={isNew ? 'Novo contato' : c.name} description={isNew ? 'Cliente, fornecedor ou transportadora' : c.types?.join(' · ')} actions={<><Button variant="outline" onClick={() => router.push('/cadastros/contatos')}><ArrowLeft /> Voltar</Button>{!isNew && <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline"><ShieldCheck /> LGPD <ChevronDown /></Button></DropdownMenuTrigger><DropdownMenuContent className="max-w-xs">
+        <DropdownMenuLabel>Direitos do titular (Lei 13.709/2018)</DropdownMenuLabel>
+        <DropdownMenuItem onSelect={() => openFile(`/api/contacts/${id}/lgpd`)}><Download /> Exportar dados do titular (JSON)</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem className="text-destructive" onSelect={() => setAnon(true)}><UserX /> Anonimizar dados (direito de eliminação)</DropdownMenuItem>
+        <p className="px-2 pb-1 pt-1 text-[11px] leading-snug text-muted-foreground">Notas fiscais, pedidos e lançamentos financeiros são preservados por obrigação legal (art. 16, I).</p>
+      </DropdownMenuContent></DropdownMenu>}{!isNew && <Button variant="outline" onClick={async () => { if (confirm('Excluir contato?')) { const r = await act('DELETE', `/api/r/contacts/${id}`); if (r) router.push('/cadastros/contatos'); } }}><Trash2 /> Excluir</Button>}<Button onClick={save}><Save /> Salvar</Button></>} />
+      <PromptDialog open={anon} onOpenChange={setAnon} destructive title="Anonimizar dados pessoais" confirmText="Anonimizar" minLength={10}
+        description="Direito de eliminação (LGPD art. 18, VI): nome, documento, e-mail, telefones, endereços e pessoas de contato serão substituídos de forma irreversível. Documentos fiscais e financeiros vinculados são preservados por cumprimento de obrigação legal (art. 16, I)."
+        label="Para confirmar, digite ANONIMIZAR" onConfirm={anonymize} />
       <Tabs defaultValue="dados">
         <TabsList><TabsTrigger value="dados">Dados gerais</TabsTrigger><TabsTrigger value="enderecos">Endereços</TabsTrigger><TabsTrigger value="pessoas">Pessoas de contato</TabsTrigger>{!isNew && <TabsTrigger value="historico">Histórico</TabsTrigger>}</TabsList>
         <TabsContent value="dados">

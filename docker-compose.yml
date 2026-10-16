@@ -25,12 +25,52 @@ services:
       DATABASE_URL: postgresql://gestao:gestao@db:5432/gestaopro?schema=public
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-gestaopro-demo-secret-troque-em-producao}
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      # Hosts adicionais do ERP (separados por vírgula); outros hosts são tratados como domínio próprio de loja
+      APP_HOSTS: ${APP_HOSTS:-}
       # Opcional: assistente de IA com Claude (sem a chave usa o motor local)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # true = webhooks nunca chamam URLs externas (entregas simuladas)
       WEBHOOKS_SIMULATE_ONLY: ${WEBHOOKS_SIMULATE_ONLY:-true}
+      # E-mail real (opcional). Sem SMTP_HOST, mensagens ficam na caixa de saída como SIMULADO
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-GestãoPro <nao-responda@gestaopro.local>}
+      # E-mail do contador (recebe XML/DANFE das notas autorizadas)
+      ACCOUNTANT_EMAIL: ${ACCOUNTANT_EMAIL:-}
+      # Reforma tributária — alíquotas de teste 2026 (informativas)
+      CBS_RATE: ${CBS_RATE:-0.9}
+      IBS_RATE: ${IBS_RATE:-0.1}
+      # Limite de requisições da API v1 por minuto, por chave
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-120}
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+  # Backup diário do banco (pg_dump compactado em ./backups, mantém 14 dias)
+  backup:
+    image: postgres:16-alpine
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: gestao
+    volumes:
+      - ./backups:/backups
+    entrypoint: >
+      sh -c 'while true; do
+        f=/backups/gestaopro-$$(date +%Y%m%d-%H%M).sql.gz;
+        pg_dump -h db -U gestao gestaopro | gzip > $$f && echo "backup ok: $$f";
+        find /backups -name "gestaopro-*.sql.gz" -mtime +14 -delete;
+        sleep 86400;
+      done'
 
 volumes:
   pgdata:

@@ -120,11 +120,16 @@ export async function danfePdf(inv: Invoice & { items: InvoiceItem[] }, company:
   text(c, 'CÁLCULO DO IMPOSTO', M, y + 4, 7, true);
   y -= 18;
   const tw = (W - 2 * M) / 7;
-  [['Base de cálc. ICMS', inv.icmsBase], ['Valor do ICMS', inv.icmsValue], ['Valor do IPI', inv.ipiValue], ['Valor PIS', inv.pisValue], ['Valor COFINS', inv.cofinsValue], ['Valor total produtos', inv.productsTotal], ['Valor total da nota', inv.total]].forEach(([l, v], i) =>
+  [['Base de cálc. ICMS', inv.icmsBase], ['Valor do ICMS', inv.icmsValue], ['Base cálc. ICMS ST', inv.icmsStBase], ['Valor ICMS ST', inv.icmsStValue], ['Valor do IPI', inv.ipiValue], ['Valor total produtos', inv.productsTotal], ['Valor total da nota', inv.total]].forEach(([l, v], i) =>
     box(c, M + i * tw, y, tw, 20, String(l), num(Number(v), 2), 8, i === 6),
   );
   y -= 20;
-  [['Valor do frete', inv.freight], ['Valor do seguro', 0], ['Desconto', inv.discount], ['Outras despesas', 0], ['Tributos aprox.', inv.approxTaxes], ['', ''], ['', '']].forEach(([l, v], i) => box(c, M + i * tw, y, tw, 20, String(l), v === '' ? '' : num(Number(v), 2)));
+  [['Valor do frete', inv.freight], ['Desconto', inv.discount], ['Valor PIS', inv.pisValue], ['Valor COFINS', inv.cofinsValue], ['ICMS UF dest. (DIFAL)', inv.difalValue], ['FCP UF dest.', inv.fcpValue], ['Tributos aprox.', inv.approxTaxes]].forEach(([l, v], i) => box(c, M + i * tw, y, tw, 20, String(l), v === '' ? '' : num(Number(v), 2)));
+  y -= 20;
+  // Reforma tributária (EC 132/2023, LC 214/2025): IBS/CBS destacados de forma informativa em 2026
+  [['Valor CBS', inv.cbsValue], ['Valor IBS', inv.ibsValue], ['Finalidade', ['', '1-Normal', '2-Complementar', '3-Ajuste', '4-Devolução'][inv.finalidade] || String(inv.finalidade)], ['Tipo de emissão', inv.contingency ? '9-Contingência offline' : '1-Normal'], ['Assinatura digital', inv.signed ? 'XMLDSig RSA-SHA1' : 'Simulada'], ['', ''], ['', '']].forEach(([l, v], i) =>
+    box(c, M + i * tw, y, tw, 20, String(l), typeof v === 'number' ? num(v, 2) : String(v)),
+  );
   y -= 30;
   text(c, 'DADOS DOS PRODUTOS / SERVIÇOS', M, y + 4, 7, true);
   y -= 16;
@@ -150,7 +155,8 @@ export async function danfePdf(inv: Invoice & { items: InvoiceItem[] }, company:
   }
   // Dados adicionais
   box(c, M, 30, W - 2 * M, 55, 'Dados adicionais / Informações complementares');
-  const info = safe(inv.additionalInfo || '');
+  const refs = inv.refAccessKey ? `NF-e referenciada: ${formatAccessKey(inv.refAccessKey)}. ` : '';
+  const info = safe(refs + (inv.additionalInfo || ''));
   for (let i = 0; i < 4; i++) text(c, info.slice(i * 140, (i + 1) * 140), M + 4, 68 - i * 9, 6.5);
   if (inv.status === 'CANCELADA') watermark(c, W, 841, 'NF-e CANCELADA');
   else watermark(c, W, 841, 'SEM VALOR FISCAL - SIMULAÇÃO');
@@ -175,6 +181,10 @@ export async function danfcePdf(inv: Invoice & { items: InvoiceItem[] }, company
   y -= 4;
   center('DANFE NFC-e - Documento Auxiliar da Nota Fiscal', 6.5, true);
   center('de Consumidor Eletrônica', 6.5, true);
+  if (inv.contingency) {
+    center('EMITIDA EM CONTINGÊNCIA', 8, true);
+    center(inv.status === 'CONTINGENCIA' ? 'Pendente de autorização' : 'Autorizada posteriormente', 6.5);
+  }
   y -= 4;
   text(c, 'Código   Descrição          Qtd  UN  Vl Unit   Vl Total', 8, y, 6, true);
   y -= 10;
@@ -194,7 +204,7 @@ export async function danfcePdf(inv: Invoice & { items: InvoiceItem[] }, company
   center('Consulte pela Chave de Acesso em www.nfce.fazenda.sp.gov.br', 6);
   if (inv.accessKey) center(formatAccessKey(inv.accessKey), 6);
   center(inv.customerDoc ? `CONSUMIDOR CPF/CNPJ: ${fmtDoc(inv.customerDoc)}` : 'CONSUMIDOR NÃO IDENTIFICADO', 6.5);
-  center(`Protocolo de autorização: ${inv.protocol || '-'}`, 6);
+  center(`Protocolo de autorização: ${inv.protocol || (inv.contingency ? 'pendente (contingência)' : '-')}`, 6);
   const qrUrl = `https://www.homologacao.nfce.fazenda.sp.gov.br/qrcode?p=${inv.accessKey}|2|2|${company.cscId || '1'}|SIMULADO`;
   const qr = await barcode(doc, 'qrcode', qrUrl, { scale: 3, height: undefined });
   if (qr) page.drawImage(qr, { x: 63, y: y - 105, width: 100, height: 100 });

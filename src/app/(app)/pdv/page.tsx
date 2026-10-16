@@ -1,8 +1,9 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
-import { Banknote, CreditCard, QrCode, ScanBarcode, Trash2, Minus, Plus, Printer, Lock, Unlock, ArrowDownToLine, ArrowUpFromLine, Search } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { Banknote, CreditCard, QrCode, ScanBarcode, Trash2, Minus, Plus, Printer, Lock, Unlock, ArrowDownToLine, ArrowUpFromLine, Search, WifiOff, RefreshCw, Download } from 'lucide-react';
 import { toast } from 'sonner';
-import { api, useApi, useAction, openFile } from '@/lib/api';
+import { api, ApiError, useApi, useAction, openFile } from '@/lib/api';
 import { PageHeader, StatCard, DataTable, Field } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
@@ -12,6 +13,18 @@ import { money, num, round2, fmtDateTime, cn } from '@/lib/utils';
 import { PAYMENT_METHODS } from '@/lib/labels';
 
 type CartItem = { productId: string; sku: string; name: string; price: number; quantity: number; discount: number; available: number };
+const OFFLINE_KEY = 'gp_pdv_offline_queue';
+type OfflineSale = { localId: string; createdAt: string; payload: Record<string, unknown>; total?: number };
+function readQueue(): OfflineSale[] {
+  try { const v = JSON.parse(localStorage.getItem(OFFLINE_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+}
+function writeQueue(q: OfflineSale[]) {
+  try { localStorage.setItem(OFFLINE_KEY, JSON.stringify(q)); } catch { /* armazenamento indisponível */ }
+}
+/** Erro de rede (fetch falhou) — diferente de um erro HTTP 4xx/5xx devolvido pela API */
+const isNetworkError = (e: unknown) => e instanceof TypeError || (typeof navigator !== 'undefined' && !navigator.onLine && !(e instanceof ApiError));
+const escapeHtml = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
+
 const METHODS = [
   { key: 'DINHEIRO', label: 'Dinheiro', icon: Banknote },
   { key: 'PIX', label: 'Pix', icon: QrCode },
@@ -33,6 +46,10 @@ export default function PDV() {
   const [done, setDone] = useState<any>(null);
   const [wh, setWh] = useState('');
   const ref = useRef<HTMLInputElement>(null);
+  const qc = useQueryClient();
+  const [queue, setQueue] = useState<OfflineSale[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const syncingRef = useRef(false);
   const session = data?.session;
   useEffect(() => { if (data?.warehouses && !wh) setWh(data.warehouses.find((w: any) => w.code === 'LOJA')?.id || data.warehouses.find((w: any) => w.isDefault)?.id || ''); }, [data, wh]);
   const subtotal = round2(cart.reduce((a, i) => a + i.price * i.quantity - i.discount, 0));
@@ -41,11 +58,12 @@ export default function PDV() {
   const change = round2(Math.max(0, paid - total));
   const missing = round2(Math.max(0, total - paid));
 
-  const add = (p: any) => {
+  const add = (p: any, qty = 1) => {
+    const avail = typeof p.stock === 'number' ? p.stock : p.stock?.available ?? 0;
     setCart((c) => {
       const ex = c.find((i) => i.productId === p.id);
-      if (ex) return c.map((i) => (i.productId === p.id ? { ...i, quantity: i.quantity + 1 } : i));
-      return [...c, { productId: p.id, sku: p.sku, name: p.name, price: p.price, quantity: 1, discount: 0, available: p.stock?.available ?? 0 }];
+      if (ex) return c.map((i) => (i.productId === p.id ? { ...i, quantity: Math.round((i.quantity + qty) * 1000) / 1000 } : i));
+      return [...c, { productId: p.id, sku: p.sku, name: p.name, price: p.price, quantity: qty, discount: 0, available: avail }];
     });
     setCode('');
     setResults([]);
@@ -56,6 +74,19 @@ export default function PDV() {
     if (!code.trim()) return;
     // Suporta "3*SKU" para multiplicar quantidade
     const [qtyStr, term] = code.includes('*') ? code.split('*') : ['1', code];
+    // Leitura direta: EAN/SKU exato ou etiqueta de balança (EAN-13 iniciando com 2)
+    try {
+      const lk = await api<any>(`/api/pdv/lookup?code=${encodeURIComponent(term.trim())}`);
+      if (lk?.product) {
+        const mult = Number(String(qtyStr).replace(',', '.')) || 1;
+        const qty = lk.scale ? Number(lk.quantity) || 0 : (Number(lk.quantity) || 1) * mult;
+        if (qty > 0) {
+          add(lk.product, Math.round(qty * 1000) / 1000);
+          if (lk.scale) toast.success(`Etiqueta de balança: ${num(qty, 3)} kg${lk.value ? ` · ${money(lk.value)}` : ''}`);
+          return;
+        }
+      }
+    } catch { /* cai para a busca padrão */ }
     const r = await api<any>(`/api/products?sellable=1&q=${encodeURIComponent(term.trim())}&pageSize=10`);
     const exact = r.rows.find((p: any) => p.gtin === term.trim() || p.sku.toLowerCase() === term.trim().toLowerCase());
     if (exact) {
@@ -65,13 +96,78 @@ export default function PDV() {
     else if (r.rows.length) setResults(r.rows);
     else toast.error('Produto não encontrado');
   };
+  const clearSale = () => { setCart([]); setPay([]); setDiscount(0); setDoc(''); };
+  const enqueueOffline = (payload: Record<string, unknown>) => {
+    const item: OfflineSale = { localId: `off-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, createdAt: new Date().toISOString(), payload, total };
+    const q = [...readQueue(), item];
+    writeQueue(q);
+    setQueue(q);
+    clearSale();
+    toast.warning('Venda salva offline — será enviada quando a conexão voltar');
+    ref.current?.focus();
+  };
   const finish = async () => {
     if (!cart.length) return toast.error('Carrinho vazio');
     const payments = pay.length ? pay.map((p) => ({ method: p.method, amount: Number(p.amount), installments: p.installments })) : [{ method: 'DINHEIRO', amount: total }];
-    const r: any = await act('POST', '/api/pdv/sale', { items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.price, discount: i.discount })), discount, payments, customerDoc: doc, warehouseId: wh }, false);
-    if (r) {
+    const payload = { items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.price, discount: i.discount })), discount, payments, customerDoc: doc, warehouseId: wh };
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return enqueueOffline(payload);
+    try {
+      const r: any = await api('/api/pdv/sale', { method: 'POST', json: payload });
       setDone(r);
-      setCart([]); setPay([]); setDiscount(0); setDoc('');
+      clearSale();
+      qc.invalidateQueries();
+    } catch (e) {
+      if (isNetworkError(e)) return enqueueOffline(payload);
+      toast.error((e as Error).message);
+    }
+  };
+  const syncOffline = useCallback(async () => {
+    if (syncingRef.current) return;
+    const pending = readQueue();
+    if (!pending.length) { setQueue([]); return; }
+    syncingRef.current = true;
+    setSyncing(true);
+    let sent = 0;
+    const remaining: OfflineSale[] = [];
+    for (let i = 0; i < pending.length; i++) {
+      const it = pending[i];
+      try {
+        await api('/api/pdv/sale', { method: 'POST', json: it.payload });
+        sent++;
+      } catch (e) {
+        if (isNetworkError(e)) { remaining.push(...pending.slice(i)); break; }
+        remaining.push(it);
+        toast.error(`Venda offline de ${fmtDateTime(it.createdAt)} não enviada: ${(e as Error).message}`);
+      }
+    }
+    // preserva vendas enfileiradas durante a sincronização
+    const added = readQueue().filter((x) => !pending.some((p) => p.localId === x.localId));
+    const next = [...remaining, ...added];
+    writeQueue(next);
+    setQueue(next);
+    syncingRef.current = false;
+    setSyncing(false);
+    if (sent) { toast.success(`${sent} venda(s) offline sincronizada(s)`); qc.invalidateQueries(); }
+  }, [qc]);
+  useEffect(() => {
+    setQueue(readQueue());
+    const onOnline = () => { syncOffline(); };
+    window.addEventListener('online', onOnline);
+    if (navigator.onLine && readQueue().length) syncOffline();
+    return () => window.removeEventListener('online', onOnline);
+  }, [syncOffline]);
+  const printReceipt = async (orderId: string) => {
+    const w = window.open('', '_blank', 'width=480,height=720');
+    if (!w) return toast.error('Permita pop-ups para imprimir o cupom');
+    try {
+      const txt = await api<string>(`/api/pdv/receipt/${orderId}`);
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Cupom</title><style>body{margin:0;padding:8px}pre{font-family:'Courier New',monospace;font-size:12px;line-height:1.25;margin:0;white-space:pre}@page{size:80mm auto;margin:2mm}</style></head><body><pre>${escapeHtml(typeof txt === 'string' ? txt : JSON.stringify(txt))}</pre></body></html>`);
+      w.document.close();
+      w.focus();
+      setTimeout(() => w.print(), 150);
+    } catch (e) {
+      w.close();
+      toast.error((e as Error).message);
     }
   };
   const addPay = (method: string) => setPay((p) => [...p, { method, amount: String(missing || total), installments: 1 }]);
@@ -106,10 +202,11 @@ export default function PDV() {
     <div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-xl font-bold">PDV · {session.register}</h1>
+          <h1 className="flex items-center gap-2 text-xl font-bold">PDV · {session.register}{queue.length > 0 && <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800" title="Vendas salvas offline aguardando envio"><WifiOff className="h-3 w-3" /> {queue.length} offline</span>}</h1>
           <p className="text-xs text-muted-foreground">Operador {session.userName} · aberto {fmtDateTime(session.openedAt)} · F2 buscar · F9 finalizar · use 3*SKU para quantidade</p>
         </div>
         <div className="flex items-center gap-2">
+          {queue.length > 0 && <Button variant="outline" disabled={syncing} onClick={syncOffline}><RefreshCw className={cn(syncing && 'animate-spin')} /> Sincronizar ({queue.length})</Button>}
           <Select className="w-48" value={wh} onChange={(e) => setWh(e.target.value)}>{data.warehouses.map((w: any) => <option key={w.id} value={w.id}>{w.name}</option>)}</Select>
           <Button variant="outline" onClick={() => setCash({ action: 'suprimento' })}><ArrowDownToLine /> Suprimento</Button>
           <Button variant="outline" onClick={() => setCash({ action: 'sangria' })}><ArrowUpFromLine /> Sangria</Button>
@@ -142,7 +239,7 @@ export default function PDV() {
                   <tr key={i.productId}>
                     <td><div className="font-medium">{i.name}</div><div className="text-xs text-muted-foreground">{i.sku} · disponível {num(i.available)}</div></td>
                     <td className="num">{money(i.price)}</td>
-                    <td className="text-center"><div className="inline-flex items-center gap-1"><Button size="icon" variant="outline" className="h-7 w-7" onClick={() => setCart(cart.map((x) => (x.productId === i.productId ? { ...x, quantity: Math.max(1, x.quantity - 1) } : x)))}><Minus /></Button><span className="w-8 text-center font-semibold">{i.quantity}</span><Button size="icon" variant="outline" className="h-7 w-7" onClick={() => setCart(cart.map((x) => (x.productId === i.productId ? { ...x, quantity: x.quantity + 1 } : x)))}><Plus /></Button></div></td>
+                    <td className="text-center"><div className="inline-flex items-center gap-1"><Button size="icon" variant="outline" className="h-7 w-7" onClick={() => setCart(cart.map((x) => (x.productId === i.productId ? { ...x, quantity: Math.max(Math.min(1, x.quantity), Math.round((x.quantity - 1) * 1000) / 1000) } : x)))}><Minus /></Button><span className="min-w-8 px-1 text-center font-semibold">{Number.isInteger(i.quantity) ? i.quantity : num(i.quantity, 3)}</span><Button size="icon" variant="outline" className="h-7 w-7" onClick={() => setCart(cart.map((x) => (x.productId === i.productId ? { ...x, quantity: x.quantity + 1 } : x)))}><Plus /></Button></div></td>
                     <td className="num"><Input type="number" step="0.01" className="ml-auto h-7 w-20 text-right" value={i.discount} onChange={(e) => setCart(cart.map((x) => (x.productId === i.productId ? { ...x, discount: Number(e.target.value) } : x)))} /></td>
                     <td className="num font-semibold">{money(i.price * i.quantity - i.discount)}</td>
                     <td><Button size="icon" variant="ghost" onClick={() => setCart(cart.filter((x) => x.productId !== i.productId))}><Trash2 className="text-destructive" /></Button></td>
@@ -182,7 +279,7 @@ export default function PDV() {
           </CardContent>
         </Card>
       </div>
-      <Dialog open={!!done} onOpenChange={(o) => !o && setDone(null)} title="Venda finalizada!" size="sm" footer={<>{done?.invoice && <Button variant="outline" onClick={() => openFile(`/api/invoices/${done.invoice.id}/danfe`)}><Printer /> Imprimir NFC-e</Button>}<Button onClick={() => { setDone(null); ref.current?.focus(); }}>Nova venda</Button></>}>
+      <Dialog open={!!done} onOpenChange={(o) => !o && setDone(null)} title="Venda finalizada!" size="sm" footer={<>{done?.order?.id && <><Button variant="outline" onClick={() => printReceipt(done.order.id)}><Printer /> Imprimir cupom</Button><Button variant="outline" onClick={() => openFile(`/api/pdv/receipt/${done.order.id}?format=escpos`)}><Download /> Baixar ESC/POS</Button></>}{done?.invoice && <Button variant="outline" onClick={() => openFile(`/api/invoices/${done.invoice.id}/danfe`)}><Printer /> Imprimir NFC-e</Button>}<Button onClick={() => { setDone(null); ref.current?.focus(); }}>Nova venda</Button></>}>
         {done && <div className="space-y-2 text-center">
           <div className="text-sm text-muted-foreground">Pedido nº {done.order?.number}</div>
           <div className="text-3xl font-bold">{money(done.order?.total)}</div>

@@ -2,7 +2,9 @@
 
 Clone funcional, no estilo do Bling, de um sistema de gestão completo: cadastros, estoque, compras, vendas multicanal, PDV, notas fiscais (NF-e/NFC-e/NFS-e), financeiro com conta digital, produção, ordens de serviço, logística, integrações com marketplaces, loja virtual, relatórios, assistente de IA e automações. Tudo integrado: os dados fluem entre os módulos.
 
-> ⚠️ **Ambiente de demonstração.** As integrações externas (SEFAZ, prefeituras, bancos, Pix, adquirentes, Correios/Melhor Envio, marketplaces) são **simuladas** de forma realista. Os algoritmos (chave de acesso NF-e com DV, XML 4.00, linha digitável FEBRABAN, BR Code Pix com CRC16, rastreio UPU) seguem os padrões reais, mas nenhum documento tem valor fiscal e nenhuma chamada é feita a serviços oficiais. As telas que simulam algo mostram um aviso 🧪.
+> ⚠️ **Ambiente de demonstração.** As integrações externas (SEFAZ, prefeituras, bancos, Pix, adquirentes, Correios/Melhor Envio, marketplaces, WhatsApp) são **simuladas** de forma realista. Os algoritmos (chave de acesso NF-e com DV, XML 4.00 **assinado com certificado A1 real (XMLDSig)**, CNAB 400, linha digitável FEBRABAN, BR Code Pix com CRC16, rastreio UPU, TOTP) seguem os padrões reais, mas nenhum documento tem valor fiscal e nenhuma chamada é feita a serviços oficiais. As telas que simulam algo mostram um aviso 🧪.
+>
+> **O que é real (funciona fora do demo):** e-mail via SMTP, assinatura digital do XML com o seu `.pfx`, arquivos CNAB/SPED/Sintegra/OFX, webhooks HTTP (com `WEBHOOKS_SIMULATE_ONLY=false`), API REST, 2FA, backups. **O que depende de credenciais/contratos externos:** autorização na SEFAZ/prefeituras, APIs bancárias e de adquirentes, marketplaces, Correios/Melhor Envio e WhatsApp Business.
 
 ---
 
@@ -28,8 +30,16 @@ Variáveis opcionais (crie um `.env` ao lado do `docker-compose.yml`):
 ```env
 ANTHROPIC_API_KEY=sk-ant-...      # assistente de IA com Claude (sem chave usa o motor local)
 NEXTAUTH_SECRET=um-segredo-forte
+NEXTAUTH_URL=https://erp.suaempresa.com.br
 WEBHOOKS_SIMULATE_ONLY=true       # false = webhooks fazem POST real para as URLs cadastradas
+SMTP_HOST=smtp.seuprovedor.com    # e-mails reais (senão ficam na caixa de saída como SIMULADO)
+SMTP_USER=... SMTP_PASS=... SMTP_FROM="Loja <nao-responda@loja.com.br>"
+ACCOUNTANT_EMAIL=contador@escritorio.com.br   # recebe XML/DANFE das notas autorizadas
+APP_HOSTS=erp.suaempresa.com.br   # outros hosts viram domínio próprio de loja virtual
 ```
+
+O `docker compose` também sobe um serviço de **backup diário** (`pg_dump` compactado em `./backups`, retenção de 14 dias) e o app expõe `GET /api/health` (usado no healthcheck).
+Restaurar um backup: `gunzip -c backups/gestaopro-AAAAMMDD-HHMM.sql.gz | docker compose exec -T db psql -U gestao gestaopro`.
 
 Para recriar os dados de demonstração: `docker compose exec app sh -c "SEED_FORCE=1 npm run db:seed"`.
 
@@ -47,6 +57,8 @@ npm run dev                       # http://localhost:3000
 
 Build de produção: `npm run build && npm start`. Checagem de tipos: `npm run typecheck`.
 
+Testes automatizados (Vitest): `npm test` (unitários: CPF/CNPJ, chave NF-e, Pix, boleto, cálculo de ICMS/ST/DIFAL/IBS/CBS, assinatura digital, CNAB, TOTP) e `npm run test:db` (integração ponta a ponta no banco populado: pedido → NF-e assinada → estoque → financeiro → devolução, cupons, inventário).
+
 ---
 
 ## 🧭 Roteiro de demonstração (fluxo ponta a ponta)
@@ -61,6 +73,13 @@ Build de produção: `npm run build && npm start`. Checagem de tipos: `npm run t
 8. **Integrações**: ligue a *Simulação em tempo real* e acompanhe pedidos chegando dos marketplaces (com reserva de estoque e sincronização dos anúncios).
 9. **Loja virtual**: edite cores, banner e seções; abra `/loja/modabrasil`, compre com Pix e pague pelo link — o pedido aparece no ERP com origem *Loja virtual*.
 10. **Assistente IA**: pergunte "quais produtos estão acabando?", "qual a inadimplência?", "DRE do mês".
+11. **Devolução**: abra um pedido entregue → *Devolução / troca* → escolha itens. É emitida a NF-e de devolução (finalidade 4, CFOP 1202/2202) referenciando a nota original, o estoque volta e o reembolso (ou crédito) é lançado. *Desmembrar* divide um pedido em aberto para faturamento parcial.
+12. **Fiscal avançado**: em *Certificado digital* instale seu `.pfx` (ou gere o de demonstração — os dados demo já vêm com um) e veja o XML assinado; ative a **contingência** e venda no PDV (NFC-e tpEmis 9), depois *Transmitir notas em contingência*. Use *Manifestação do destinatário*, *Inutilização* e *Arquivos do contador* (SPED EFD, Sintegra, ZIP com XMLs).
+13. **Financeiro avançado**: *Remessa e retorno CNAB* (gere a remessa, simule o retorno do banco e processe — os boletos são baixados), *Renegociar* títulos vencidos em *Contas a receber*, *Agenda de recebíveis* (liquidação/antecipação de cartão), *Orçamento* previsto × realizado, rateio por centro de custo e DRE por competência ou caixa.
+14. **Estoque**: *Inventário* com contagem por bipagem e ajuste automático; *Transferência entre empresas* com NF-e de transferência (CFOP 5152/6152).
+15. **Loja**: cupons `BEMVINDO10`, `FRETEGRATIS`, `VERAO30`; frete grátis para SP; área *Meus pedidos* (e-mail + CPF da compra); SEO, sitemap e domínio próprio.
+16. **PDV**: etiqueta de balança — bipe `2001230019905` (granola, R$ 19,90 → ~0,499 kg); imprima o cupom térmico (texto/ESC-POS); sem internet as vendas ficam numa fila local e são enviadas quando a conexão volta.
+17. **Segurança**: *Configurações → Segurança (2FA)* ativa o autenticador (TOTP); *Usuários → Convidar* envia link para definir senha; "Esqueci minha senha" no login; *Sistema e auditoria* mostra a trilha de auditoria, a caixa de saída de e-mails e a fila de tarefas; LGPD (exportar/anonimizar) na ficha do contato.
 
 Troque de empresa (ou ative a **visão consolidada**) no seletor do topo: a conta demo tem duas empresas, *Moda Brasil* (Simples Nacional, SP) e *TechCasa* (Lucro Presumido, RJ), que compartilham cadastros e têm estoque, documentos e financeiro próprios.
 
@@ -84,7 +103,11 @@ Troque de empresa (ou ative a **visão consolidada**) no seletor do topo: a cont
 | **Loja virtual** | Editor visual (identidade, banner, seções ordenáveis, frete grátis, desconto no Pix, lista de preço e depósito) com pré-visualização desktop/mobile; vitrine com busca, categorias, variações (cor/tamanho com estoque por combinação), carrinho, cálculo de frete por CEP e **checkout** (Pix, boleto, cartão) integrado a clientes, pedidos, estoque e financeiro |
 | **Multiempresas** | Várias empresas (CNPJs) na mesma conta, cadastros compartilhados, estoque unificado ou separado, troca rápida de empresa e **visão consolidada** nos dashboards e relatórios |
 | **Relatórios e IA** | Dashboard "Meu Negócio" (KPIs, vendas 30 dias, canais, top produtos, estoque crítico, saldos); 15 relatórios (vendas por período/produto/canal/cliente/vendedor, estoque, ABC, ruptura, financeiro, inadimplência, DRE, fluxo, notas) exportáveis em **PDF e Excel**; **assistente de IA** que consulta os dados (Claude com tool use quando há `ANTHROPIC_API_KEY`, ou motor local de intenções em português) |
-| **Automações** | **31 automações** reais, ativáveis por empresa, com log de execução (lista abaixo) |
+| **Automações** | **35 automações** reais, ativáveis por empresa, com log de execução (lista abaixo) |
+| **Devoluções e trocas** | Devolução total/parcial por item com NF-e de devolução referenciada, retorno ao estoque opcional, estorno (contas a pagar) ou crédito (abate títulos), troca com novo pedido, redução de comissão; desmembramento de pedido (entrega parcial / pendência) |
+| **Fiscal avançado** | **ICMS-ST** (MVA, CST 10/CSOSN 202, CFOP 5403/6403), **DIFAL + FCP** (EC 87/2015) para consumidor final de outra UF, **IBS/CBS** (reforma tributária, destaque informativo 2026), assinatura **XMLDSig** com certificado A1 real (`.pfx`) ou autoassinado de demonstração, **contingência offline** de NFC-e (tpEmis 9) com regularização, **inutilização** de numeração, **manifestação do destinatário** (ciência/confirmação/desconhecimento/não realizada) com importação do XML, **SPED Fiscal (EFD ICMS/IPI)**, **Sintegra** e pacote ZIP para o contador, NF-e de transferência entre filiais |
+| **Financeiro avançado** | **CNAB 400** remessa/retorno (baixa automática), renegociação de dívidas (juros/desconto/novo parcelamento), **agenda de recebíveis** de cartão com liquidação D+1/D+30 e antecipação, **rateio por centro de custo**, **orçamento** previsto × realizado, DRE por competência ou caixa |
+| **Sistema** | Fila de tarefas persistente com novas tentativas (webhooks, e-mails), caixa de saída (SMTP real ou simulado), **trilha de auditoria** de todas as escritas, **2FA (TOTP)**, convite de usuário e redefinição de senha por e-mail, limite de tentativas de login e de requisições na API, **LGPD** (exportação e anonimização), upload de arquivos/imagens, health check, backups |
 | **Usuários e permissões** | Multiusuário (NextAuth), perfis Administrador/Vendedor/Financeiro/Estoquista e perfis próprios, matriz por módulo (sem acesso/visualizar/editar) aplicada no menu e na API, empresas permitidas por usuário |
 
 ### ⚡ Automações incluídas
@@ -96,7 +119,9 @@ Integrações: sincronizar estoque com os canais em tempo real · sincronizar pr
 Logística: gerar etiqueta ao faturar · garantir etiqueta após o packing · marcar enviado na postagem · enviar rastreio ao cliente · marcar entregue.
 Fiscal/produção/serviços/cadastros: enviar DANFE/XML ao cliente e ao contador · verificar matéria-prima ao iniciar OP · atualizar custo do produto acabado · avisar cliente quando a OS é concluída · e-mail de boas-vindas ao novo cliente.
 
-E-mails, WhatsApp e envio ao contador são simulados (registrados no log da automação).
+Novas: liquidar recebíveis de cartão no vencimento · avisar cliente sobre devolução/troca · notificar filial sobre transferência recebida · resumo do inventário concluído.
+
+E-mails passam pela **caixa de saída** e são enviados de verdade quando `SMTP_HOST` está configurado (senão ficam como SIMULADO); WhatsApp é sempre simulado.
 
 ---
 
@@ -146,6 +171,13 @@ src/server/          contexto, http, eventos, PDF, planilhas, OpenAPI e serviço
 ### Notas de implementação
 
 - Valores monetários usam `Float` com arredondamento em 2 casas na camada de serviço (adequado ao demo; em produção prefira `Decimal`).
-- As automações rodam de forma síncrona após cada operação, o que deixa o demo previsível; em produção, a troca natural é uma fila (BullMQ/SQS).
+- As automações rodam de forma síncrona após cada operação (previsível); trabalhos que podem falhar — entrega de webhooks e envio de e-mails — vão para a **fila persistente** (tabela `Job`) processada por um worker interno (`src/instrumentation.ts`) com backoff exponencial. Para várias réplicas, defina `DISABLE_WORKER=true` nas réplicas web e mantenha um processo worker.
 - A rotina diária (cobrança, lotes vencendo, contas do dia) roda no primeiro acesso do dia por empresa ou pelo botão em *Automações*.
 - O CEP é consultado no ViaCEP quando há internet; sem rede, os campos são preenchidos manualmente.
+- Domínio próprio da loja: aponte o DNS (CNAME) para o servidor e informe o domínio no editor da loja; o `middleware` reconhece o host e abre a vitrine. O sitemap (`/sitemap.xml`) lista as lojas publicadas.
+- O limitador de requisições é em memória (por instância); com várias réplicas, troque por Redis mantendo a mesma função (`src/lib/rateLimit.ts`).
+
+### Limitações conhecidas (fora do alcance sem credenciais externas)
+
+- Autorização real na SEFAZ/prefeituras (requer webservices estaduais/municipais, credenciamento e certificado ICP-Brasil): o XML é gerado e **assinado de verdade**, mas a autorização é simulada.
+- APIs de bancos (boleto registrado, Pix dinâmico, extrato automático), adquirentes, marketplaces, Correios/Melhor Envio e WhatsApp Business exigem contratos e chaves; os conectores simulam o comportamento e os pontos de integração estão isolados em `src/server/services`.

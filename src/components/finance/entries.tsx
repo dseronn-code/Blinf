@@ -2,9 +2,9 @@
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useState } from 'react';
-import { Plus, CheckCircle2, FileText, Link2, Download, Undo2, XCircle, Copy } from 'lucide-react';
+import { Plus, CheckCircle2, FileText, Link2, Download, Undo2, XCircle, Copy, Pencil, Trash2, Handshake } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi, useAction, qs, openFile } from '@/lib/api';
+import { api, useApi, useAction, qs, openFile } from '@/lib/api';
 import { PageHeader, Filters, SearchBox, Chips, DataTable, Pagination, StatCard, Field } from '@/components/common/page';
 import { EntityPicker, contactOption } from '@/components/common/picker';
 import { Button } from '@/components/ui/button';
@@ -30,10 +30,47 @@ export function EntriesPage({ type }: { type: 'RECEBER' | 'PAGAR' }) {
   const [newE, setNewE] = useState<any>(null);
   const [payE, setPayE] = useState<any>(null);
   const [link, setLink] = useState<any>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [reneg, setReneg] = useState<any>(null);
   const isR = type === 'RECEBER';
+  const allocs: { costCenterId: string; percent: string | number }[] = newE?.allocations || [];
+  const allocTotal = round2(allocs.reduce((a, x) => a + (Number(x.percent) || 0), 0));
+  const setAlloc = (i: number, patch: Record<string, unknown>) => setNewE({ ...newE, allocations: allocs.map((a, j) => (j === i ? { ...a, ...patch } : a)) });
   const create = async () => {
-    const r = await act('POST', '/api/finance/entries', { ...newE, type }, 'Lançamento criado');
+    if (allocs.length) {
+      if (allocs.some((a) => !a.costCenterId || !(Number(a.percent) > 0))) return toast.error('Rateio: informe o centro de custo e o percentual de cada linha');
+      if (new Set(allocs.map((a) => a.costCenterId)).size !== allocs.length) return toast.error('Rateio: centro de custo repetido');
+      if (Math.abs(allocTotal - 100) > 0.01) return toast.error(`O rateio deve somar 100% (atual: ${allocTotal}%)`);
+    }
+    const allocations = allocs.map((a) => ({ costCenterId: a.costCenterId, percent: Number(a.percent) }));
+    const r = newE.id
+      ? await act('PUT', `/api/finance/entries/${newE.id}`, { description: newE.description, amount: newE.amount, dueDate: newE.dueDate, competenceDate: newE.competenceDate || undefined, chartAccountId: newE.chartAccountId, costCenterId: newE.costCenterId, paymentMethod: newE.paymentMethod, documentNumber: newE.documentNumber, notes: newE.notes, allocations }, 'Lançamento atualizado')
+      : await act('POST', '/api/finance/entries', { ...newE, type, allocations }, 'Lançamento criado');
     if (r) setNewE(null);
+  };
+  const edit = async (row: any) => {
+    try {
+      const e = await api<any>(`/api/finance/entries/${row.id}`);
+      setNewE({
+        id: e.id, description: e.description, contactLabel: e.contactName, amount: e.amount, dueDate: toInputDate(e.dueDate), competenceDate: toInputDate(e.competenceDate),
+        chartAccountId: e.chartAccountId || '', costCenterId: e.costCenterId || '', paymentMethod: e.paymentMethod || '', documentNumber: e.documentNumber || '', notes: e.notes || '',
+        allocations: (e.allocations || []).map((a: any) => ({ costCenterId: a.costCenterId, percent: a.percent })),
+      });
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+  const openRows = (data?.rows || []).filter((r: any) => selected.includes(r.id) && ['ABERTO', 'PARCIAL'].includes(r.status));
+  const renegOpen = round2(openRows.reduce((a: number, r: any) => a + r.amount - r.paidAmount, 0));
+  const renegCustomers = new Set(openRows.map((r: any) => r.contactId || r.contactName));
+  const renegInterest = reneg ? round2((renegOpen * (Number(reneg.interestPercent) || 0)) / 100) : 0;
+  const renegTotal = reneg ? round2(renegOpen + renegInterest - (Number(reneg.discount) || 0)) : 0;
+  const renegotiate = async () => {
+    const r: any = await act('POST', '/api/finance/renegotiate', { entryIds: openRows.map((x: any) => x.id), installments: Number(reneg.installments) || 1, firstDueDate: reneg.firstDueDate, interestPercent: Number(reneg.interestPercent) || 0, discount: Number(reneg.discount) || 0, paymentMethod: reneg.paymentMethod }, false);
+    if (!r) return;
+    toast.success(`Acordo nº ${r.agreement} criado: ${money(r.total)} em ${r.entries?.length || reneg.installments} parcela(s)`);
+    setReneg(null);
+    setSelected([]);
   };
   const pay = async () => {
     const r = await act('POST', `/api/finance/entries/${payE.id}/pay`, payE.form, isR ? 'Recebimento registrado' : 'Pagamento registrado');
@@ -53,9 +90,10 @@ export function EntriesPage({ type }: { type: 'RECEBER' | 'PAGAR' }) {
         <SearchBox value={q} onChange={setQ} placeholder="Descrição, contato ou documento" />
         <Input type="date" className="w-40" value={from} onChange={(e) => setFrom(e.target.value)} title="Vencimento de" />
         <Input type="date" className="w-40" value={to} onChange={(e) => setTo(e.target.value)} title="Vencimento até" />
-        <Chips value={status} onChange={(v) => { setStatus(v); setPage(1); }} options={[{ value: 'EM_ABERTO', label: 'Em aberto' }, { value: 'VENCIDO', label: 'Vencidos' }, { value: 'PAGO', label: isR ? 'Recebidos' : 'Pagos' }, { value: '', label: 'Todos' }, { value: 'CANCELADO', label: 'Cancelados' }]} />
+        <Chips value={status} onChange={(v) => { setStatus(v); setPage(1); setSelected([]); }} options={[{ value: 'EM_ABERTO', label: 'Em aberto' }, { value: 'VENCIDO', label: 'Vencidos' }, { value: 'PAGO', label: isR ? 'Recebidos' : 'Pagos' }, { value: '', label: 'Todos' }, { value: 'CANCELADO', label: 'Cancelados' }]} />
+        {isR && <Button variant="outline" className="ml-auto" disabled={!openRows.length} title="Selecione títulos em aberto de um mesmo cliente" onClick={() => setReneg({ installments: 1, firstDueDate: toInputDate(new Date(Date.now() + 7 * 86400000)), interestPercent: 0, discount: 0, paymentMethod: 'BOLETO' })}><Handshake /> Renegociar{openRows.length ? ` (${openRows.length})` : ''}</Button>}
       </Filters>
-      <DataTable loading={isLoading} rows={data?.rows} columns={[
+      <DataTable loading={isLoading} rows={data?.rows} selectable={isR} selected={selected} onSelect={setSelected} columns={[
         { key: 'dueDate', header: 'Vencimento', cell: (r: any) => <span className={r.effectiveStatus === 'VENCIDO' ? 'font-semibold text-red-600' : ''}>{fmtDate(r.dueDate)}</span> },
         { key: 'description', header: 'Descrição', cell: (r: any) => <div><div className="font-medium">{r.description}</div><div className="text-xs text-muted-foreground">{r.chartAccount?.name}{r.documentNumber ? ` · doc ${r.documentNumber}` : ''}</div></div> },
         { key: 'contactName', header: isR ? 'Cliente' : 'Fornecedor', cell: (r: any) => <span className="text-sm">{r.contactName || '—'}</span> },
@@ -70,6 +108,7 @@ export function EntriesPage({ type }: { type: 'RECEBER' | 'PAGAR' }) {
             <DropdownMenu>
               <DropdownMenuTrigger asChild><Button size="icon" variant="ghost">⋯</Button></DropdownMenuTrigger>
               <DropdownMenuContent>
+                {['ABERTO', 'PARCIAL'].includes(r.status) && <DropdownMenuItem onSelect={() => edit(r)}><Pencil /> Editar / rateio</DropdownMenuItem>}
                 {isR && <DropdownMenuItem onSelect={() => openFile(`/api/finance/entries/${r.id}/boleto`)}><FileText /> Boleto (PDF)</DropdownMenuItem>}
                 {isR && r.status !== 'PAGO' && <DropdownMenuItem onSelect={async () => { const l: any = await act('POST', `/api/finance/entries/${r.id}/link`, {}, 'Link de pagamento criado'); if (l) setLink(l); }}><Link2 /> Gerar link de pagamento / Pix</DropdownMenuItem>}
                 {r.paidAmount > 0 && <DropdownMenuItem onSelect={() => confirm('Estornar a baixa?') && act('POST', `/api/finance/entries/${r.id}/reverse`, {}, 'Baixa estornada')}><Undo2 /> Estornar baixa</DropdownMenuItem>}
@@ -81,22 +120,62 @@ export function EntriesPage({ type }: { type: 'RECEBER' | 'PAGAR' }) {
           </div>
         ) },
       ]} />
-      {data && <Pagination page={page} pageSize={data.pageSize} total={data.total} onPage={setPage} />}
+      {data && <Pagination page={page} pageSize={data.pageSize} total={data.total} onPage={(p) => { setPage(p); setSelected([]); }} />}
 
-      <Dialog open={!!newE} onOpenChange={(o) => !o && setNewE(null)} title={isR ? 'Nova conta a receber' : 'Nova conta a pagar'} size="lg" footer={<Button onClick={create}>Salvar</Button>}>
+      <Dialog open={!!newE} onOpenChange={(o) => !o && setNewE(null)} title={newE?.id ? 'Editar lançamento' : isR ? 'Nova conta a receber' : 'Nova conta a pagar'} size="lg" footer={<Button onClick={create}>Salvar</Button>}>
         {newE && <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <Field label="Descrição *" className="col-span-2"><Input value={newE.description || ''} onChange={(e) => setNewE({ ...newE, description: e.target.value })} /></Field>
-          <Field label={isR ? 'Cliente' : 'Fornecedor'} className="col-span-2"><EntityPicker endpoint={`/api/r/contacts?type=${isR ? 'CLIENTE' : 'FORNECEDOR'}`} value={newE.contactId} label={newE.contactLabel} map={contactOption} onChange={(v, raw) => setNewE({ ...newE, contactId: v, contactLabel: raw?.name })} /></Field>
+          {newE.id ? <Field label={isR ? 'Cliente' : 'Fornecedor'} className="col-span-2"><Input readOnly disabled value={newE.contactLabel || '—'} /></Field> : <Field label={isR ? 'Cliente' : 'Fornecedor'} className="col-span-2"><EntityPicker endpoint={`/api/r/contacts?type=${isR ? 'CLIENTE' : 'FORNECEDOR'}`} value={newE.contactId} label={newE.contactLabel} map={contactOption} onChange={(v, raw) => setNewE({ ...newE, contactId: v, contactLabel: raw?.name })} /></Field>}
           <Field label="Valor (R$) *"><Input type="number" step="0.01" value={newE.amount || ''} onChange={(e) => setNewE({ ...newE, amount: e.target.value })} /></Field>
-          <Field label="1º vencimento"><Input type="date" value={newE.dueDate} onChange={(e) => setNewE({ ...newE, dueDate: e.target.value })} /></Field>
-          <Field label="Parcelas" hint="divide o valor"><Input type="number" min={1} value={newE.installments} onChange={(e) => setNewE({ ...newE, installments: e.target.value })} /></Field>
-          <Field label="Recorrência mensal" hint="repete o valor N meses"><Input type="number" min={0} value={newE.recurrence || ''} onChange={(e) => setNewE({ ...newE, recurrence: e.target.value })} /></Field>
+          <Field label={newE.id ? 'Vencimento' : '1º vencimento'}><Input type="date" value={newE.dueDate} onChange={(e) => setNewE({ ...newE, dueDate: e.target.value })} /></Field>
+          {!newE.id && <Field label="Parcelas" hint="divide o valor"><Input type="number" min={1} value={newE.installments} onChange={(e) => setNewE({ ...newE, installments: e.target.value })} /></Field>}
+          {!newE.id && <Field label="Recorrência mensal" hint="repete o valor N meses"><Input type="number" min={0} value={newE.recurrence || ''} onChange={(e) => setNewE({ ...newE, recurrence: e.target.value })} /></Field>}
           <Field label="Categoria (plano de contas)" className="col-span-2"><Select value={newE.chartAccountId || ''} onChange={(e) => setNewE({ ...newE, chartAccountId: e.target.value })}><option value="">—</option>{charts?.rows.map((c: any) => <option key={c.id} value={c.id}>{c.code} {c.name}</option>)}</Select></Field>
-          <Field label="Centro de custo"><Select value={newE.costCenterId || ''} onChange={(e) => setNewE({ ...newE, costCenterId: e.target.value })}><option value="">—</option>{centers?.rows.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+          <Field label="Centro de custo" hint={allocs.length ? 'substituído pelo rateio' : undefined}><Select disabled={!!allocs.length} value={newE.costCenterId || ''} onChange={(e) => setNewE({ ...newE, costCenterId: e.target.value })}><option value="">—</option>{centers?.rows.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
           <Field label="Forma de pagamento"><Select value={newE.paymentMethod || ''} onChange={(e) => setNewE({ ...newE, paymentMethod: e.target.value })}>{Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select></Field>
           <Field label="Nº documento"><Input value={newE.documentNumber || ''} onChange={(e) => setNewE({ ...newE, documentNumber: e.target.value })} /></Field>
           <Field label="Competência"><Input type="date" value={newE.competenceDate || ''} onChange={(e) => setNewE({ ...newE, competenceDate: e.target.value })} /></Field>
           <Field label="Observações" className="col-span-2 md:col-span-4"><Textarea value={newE.notes || ''} onChange={(e) => setNewE({ ...newE, notes: e.target.value })} /></Field>
+          <div className="col-span-2 rounded-md border p-3 md:col-span-4">
+            <div className="mb-2 flex items-center justify-between">
+              <div><div className="text-sm font-semibold">Rateio por centro de custo</div><p className="text-[11px] text-muted-foreground">Divide o valor do lançamento entre vários centros de custo. Os percentuais devem somar 100%.</p></div>
+              <Button size="sm" variant="outline" onClick={() => setNewE({ ...newE, allocations: [...allocs, { costCenterId: '', percent: allocs.length ? round2(Math.max(0, 100 - allocTotal)) : 100 }] })}><Plus /> Adicionar centro</Button>
+            </div>
+            {allocs.length > 0 && <div className="space-y-2">
+              {allocs.map((a, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Select className="flex-1" value={a.costCenterId} onChange={(e) => setAlloc(i, { costCenterId: e.target.value })}><option value="">Selecione o centro de custo…</option>{centers?.rows.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
+                  <div className="relative w-28"><Input type="number" step="0.01" min={0} max={100} className="pr-6 text-right" value={a.percent} onChange={(e) => setAlloc(i, { percent: e.target.value })} /><span className="absolute right-2 top-2 text-sm text-muted-foreground">%</span></div>
+                  <span className="w-28 text-right text-xs tabular-nums text-muted-foreground">{money(round2((Number(newE.amount) || 0) * (Number(a.percent) || 0) / 100))}</span>
+                  <Button size="icon" variant="ghost" onClick={() => setNewE({ ...newE, allocations: allocs.filter((_, j) => j !== i) })} title="Remover"><Trash2 /></Button>
+                </div>
+              ))}
+              <div className={`text-right text-xs font-semibold ${Math.abs(allocTotal - 100) > 0.01 ? 'text-red-600' : 'text-green-700'}`}>Total: {allocTotal}%{Math.abs(allocTotal - 100) > 0.01 ? ' — deve somar 100%' : ''}</div>
+            </div>}
+          </div>
+        </div>}
+      </Dialog>
+
+      <Dialog open={!!reneg} onOpenChange={(o) => !o && setReneg(null)} title="Renegociar títulos" description="Os títulos selecionados são cancelados e substituídos por um acordo com novo parcelamento" footer={<Button onClick={renegotiate} disabled={!openRows.length || renegCustomers.size > 1 || renegTotal <= 0}><Handshake /> Gerar acordo</Button>}>
+        {reneg && <div className="space-y-3 text-sm">
+          {renegCustomers.size > 1 && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">Os títulos selecionados são de clientes diferentes. Renegocie títulos de um único cliente por vez.</div>}
+          <div className="max-h-40 divide-y overflow-y-auto rounded-md border">
+            {openRows.map((r: any) => <div key={r.id} className="flex justify-between px-3 py-1.5 text-xs"><span>{r.description} <span className="text-muted-foreground">· {r.contactName || '—'} · venc. {fmtDate(r.dueDate)}</span></span><b>{money(r.amount - r.paidAmount)}</b></div>)}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Parcelas"><Input type="number" min={1} value={reneg.installments} onChange={(e) => setReneg({ ...reneg, installments: e.target.value })} /></Field>
+            <Field label="1º vencimento"><Input type="date" value={reneg.firstDueDate} onChange={(e) => setReneg({ ...reneg, firstDueDate: e.target.value })} /></Field>
+            <Field label="Juros (%)" hint="sobre o saldo em aberto"><Input type="number" step="0.01" min={0} value={reneg.interestPercent} onChange={(e) => setReneg({ ...reneg, interestPercent: e.target.value })} /></Field>
+            <Field label="Desconto (R$)"><Input type="number" step="0.01" min={0} value={reneg.discount} onChange={(e) => setReneg({ ...reneg, discount: e.target.value })} /></Field>
+            <Field label="Forma de pagamento" className="col-span-2"><Select value={reneg.paymentMethod} onChange={(e) => setReneg({ ...reneg, paymentMethod: e.target.value })}><option value="BOLETO">Boleto</option><option value="PIX">Pix</option></Select></Field>
+          </div>
+          <div className="space-y-1 rounded-md border bg-muted/40 p-3">
+            <div className="flex justify-between"><span>Saldo original ({openRows.length} título(s))</span><b>{money(renegOpen)}</b></div>
+            <div className="flex justify-between"><span>+ Juros</span><span>{money(renegInterest)}</span></div>
+            <div className="flex justify-between"><span>− Desconto</span><span>{money(Number(reneg.discount) || 0)}</span></div>
+            <div className="flex justify-between border-t pt-1"><span>Total do acordo</span><b className={renegTotal <= 0 ? 'text-red-600' : ''}>{money(renegTotal)}</b></div>
+            <div className="text-right text-xs text-muted-foreground">{Math.max(1, Number(reneg.installments) || 1)}x de {money(round2(renegTotal / Math.max(1, Number(reneg.installments) || 1)))}</div>
+          </div>
         </div>}
       </Dialog>
 

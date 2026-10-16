@@ -1,9 +1,10 @@
 'use client';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { ArrowLeft, Plus, Save, Trash2, Wand2, Tag } from 'lucide-react';
-import { useApi, useAction, openFile } from '@/lib/api';
+import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Plus, Save, Trash2, Wand2, Tag, Upload, Star, Loader2, ImageIcon } from 'lucide-react';
+import { toast } from 'sonner';
+import { useApi, useAction, openFile, api } from '@/lib/api';
 import { PageHeader, Field, DataTable } from '@/components/common/page';
 import { EntityPicker, productOption, contactOption } from '@/components/common/picker';
 import { Button } from '@/components/ui/button';
@@ -33,6 +34,31 @@ export default function ProductForm() {
     if (data.kind === 'VARIACAO_PAI' && data.attributes) setAttrs(Object.entries(data.attributes as Record<string, string[]>).map(([name, v]) => ({ name, values: v.join(', ') })));
   }, [data]);
   const set = (k: string, v: unknown) => setP((x: any) => ({ ...x, [k]: v }));
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const images: string[] = Array.isArray(p.images) ? p.images : [];
+  const uploadImages = async (files: FileList | null) => {
+    if (!files?.length) return;
+    setUploading(true);
+    const added: string[] = [];
+    for (const f of Array.from(files)) {
+      if (!/^image\/(png|jpe?g|webp|gif)$/.test(f.type)) { toast.error(`${f.name}: use PNG, JPG, WEBP ou GIF`); continue; }
+      if (f.size > 4 * 1024 * 1024) { toast.error(`${f.name}: arquivo maior que 4 MB`); continue; }
+      const fd = new FormData();
+      fd.append('file', f);
+      try {
+        const r = await api<{ id: string; url: string }>('/api/files', { method: 'POST', body: fd });
+        added.push(r.url);
+      } catch (e) { toast.error(`${f.name}: ${(e as Error).message}`); }
+    }
+    setUploading(false);
+    if (fileRef.current) fileRef.current.value = '';
+    if (added.length) {
+      setP((x: any) => { const imgs = [...(Array.isArray(x.images) ? x.images : []), ...added]; return { ...x, images: imgs, imageUrl: x.imageUrl || imgs[0] }; });
+      toast.success(`${added.length} imagem(ns) enviada(s) — clique em Salvar para gravar no produto`);
+    }
+  };
+  const removeImage = (url: string) => setP((x: any) => { const imgs = (x.images || []).filter((u: string) => u !== url); return { ...x, images: imgs, imageUrl: x.imageUrl === url ? imgs[0] || null : x.imageUrl }; });
   const markup = p.costPrice ? round2(((p.price - p.costPrice) / p.costPrice) * 100) : 0;
   const margin = p.price ? round2(((p.price - p.costPrice) / p.price) * 100) : 0;
   const hasComposition = p.kind === 'KIT' || p.kind === 'FABRICADO';
@@ -79,9 +105,37 @@ export default function ProductForm() {
             <Field label="Marca"><Input value={p.brand || ''} onChange={(e) => set('brand', e.target.value)} /></Field>
             <Field label="Categoria" className="md:col-span-2"><Select value={p.categoryId || ''} onChange={(e) => set('categoryId', e.target.value)}><option value="">—</option>{cats?.rows.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
             <Field label="Fornecedor padrão (reposição automática)" className="md:col-span-2"><EntityPicker endpoint="/api/r/contacts?type=FORNECEDOR" value={p.supplierId} label={p.supplierId ? 'Fornecedor selecionado' : null} onChange={(v) => set('supplierId', v)} map={contactOption} /></Field>
-            <Field label="URL da imagem" className="md:col-span-2"><Input value={p.imageUrl || ''} onChange={(e) => set('imageUrl', e.target.value)} placeholder="https://…" /></Field>
+            <Field label="URL da imagem principal" className="md:col-span-2" hint="Preenchida pela galeria abaixo ou informe uma URL externa"><Input value={p.imageUrl || ''} onChange={(e) => set('imageUrl', e.target.value)} placeholder="https://…" /></Field>
+            <Field label="Código de balança" hint="5 dígitos — o PDV lê etiquetas EAN-13 de balança iniciadas por 2 (2 + código + peso/preço)"><Input inputMode="numeric" maxLength={5} value={p.scaleCode || ''} onChange={(e) => set('scaleCode', e.target.value.replace(/\D/g, '').slice(0, 5) || null)} placeholder="00000" /></Field>
             <Field label="Opções" className="md:col-span-2"><div className="flex gap-4 pt-1.5"><Checkbox label="Ativo" checked={p.active} onChange={(e) => set('active', e.target.checked)} /><Checkbox label="Destaque na loja virtual" checked={p.featured} onChange={(e) => set('featured', e.target.checked)} /></div></Field>
             <Field label="Descrição comercial (loja virtual e anúncios)" className="md:col-span-4"><Textarea rows={4} value={p.description || ''} onChange={(e) => set('description', e.target.value)} /></Field>
+          </CardContent></Card>
+          <Card className="mt-3"><CardHeader><CardTitle>Galeria de imagens</CardTitle>
+            <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">PNG, JPG, WEBP ou GIF · até 4 MB · máx. 10 imagens</span>
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple className="hidden" onChange={(e) => uploadImages(e.target.files)} />
+              <Button size="sm" variant="outline" disabled={uploading} onClick={() => fileRef.current?.click()}>{uploading ? <Loader2 className="animate-spin" /> : <Upload />} Enviar imagens</Button></div>
+          </CardHeader><CardContent>
+            {!images.length ? (
+              <button type="button" onClick={() => fileRef.current?.click()} className="flex w-full flex-col items-center justify-center rounded-lg border-2 border-dashed py-8 text-sm text-muted-foreground hover:bg-muted/40"><ImageIcon className="mb-2 h-8 w-8 opacity-50" />Nenhuma imagem. Clique para enviar as fotos do produto (usadas na loja virtual e nos anúncios).</button>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+                {images.map((url) => {
+                  const main = p.imageUrl === url;
+                  return (
+                    <div key={url} className={`group relative overflow-hidden rounded-lg border bg-white ${main ? 'ring-2 ring-primary' : ''}`}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={url} alt="" className="aspect-square w-full object-contain" />
+                      {main && <Badge tone="blue" className="absolute left-1 top-1">Principal</Badge>}
+                      <div className="flex justify-between gap-1 border-t bg-card p-1">
+                        <Button size="sm" variant="ghost" className="h-7 px-1.5 text-[11px]" disabled={main} onClick={() => set('imageUrl', url)} title="Definir como principal"><Star className={main ? 'fill-amber-400 text-amber-500' : ''} /> {main ? 'Principal' : 'Definir como principal'}</Button>
+                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => removeImage(url)} title="Remover"><Trash2 className="text-destructive" /></Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {images.length > 0 && <p className="mt-2 text-xs text-muted-foreground">As alterações na galeria são gravadas ao clicar em <b>Salvar</b>.</p>}
           </CardContent></Card>
         </TabsContent>
         <TabsContent value="precos">
@@ -130,6 +184,7 @@ export default function ProductForm() {
             <Field label="CEST"><Input value={p.cest || ''} onChange={(e) => set('cest', e.target.value)} /></Field>
             <Field label="Origem da mercadoria"><Select value={p.origin} onChange={(e) => set('origin', Number(e.target.value))}><option value={0}>0 - Nacional</option><option value={1}>1 - Estrangeira (importação direta)</option><option value={2}>2 - Estrangeira (mercado interno)</option></Select></Field>
             <Field label="Alíquota IPI (%)"><Input type="number" step="0.01" value={p.ipiRate} onChange={(e) => set('ipiRate', e.target.value)} /></Field>
+            <Field label="MVA ICMS-ST (%)" hint="Margem de valor agregado para cálculo da substituição tributária (0 = sem ST)"><Input type="number" step="0.01" value={p.mvaST ?? 0} onChange={(e) => set('mvaST', e.target.value)} /></Field>
             <p className="text-xs text-muted-foreground md:col-span-4">ICMS, PIS e COFINS são calculados automaticamente pela natureza de operação e pelo regime tributário da empresa (Simples Nacional / Lucro Presumido / Real).</p>
           </CardContent></Card>
         </TabsContent>

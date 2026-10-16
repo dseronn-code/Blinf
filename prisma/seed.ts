@@ -21,6 +21,12 @@ import { advanceTracking } from '../src/server/services/logistics';
 import { createProductionOrder, finishProduction, startProduction } from '../src/server/services/production';
 import { saveServiceOrder, changeServiceOrderStatus, invoiceServiceOrder } from '../src/server/services/serviceOrders';
 import { AUTOMATIONS } from '../src/server/services/automations';
+import { generateDemoCertificate, readCertificate } from '../src/server/services/cert';
+import { processJobs } from '../src/server/services/jobs';
+import { createReturn } from '../src/server/services/returns';
+import { createInventoryCount, setCounts, finishInventoryCount } from '../src/server/services/operations';
+import { fetchDistribution, manifest, transferBetweenCompanies } from '../src/server/services/fiscalExtras';
+import { saveBudget } from '../src/server/services/financeExtras';
 
 // mesmo client usado pelos serviços
 const log = (...a: unknown[]) => console.log('  •', ...a);
@@ -60,15 +66,22 @@ const CHART = [
 
 async function setupCompany(orgId: string, data: { name: string; tradeName: string; cnpj: string; ie: string; im: string; taxRegime: string; crt: number; uf: string; city: string; cityCode: string; zip: string; street: string; number: string; district: string; phone: string; email: string; color: string }) {
   const { color, ...rest } = data;
+  // Certificado A1 autoassinado de demonstração (senha demo1234): o XML das notas é assinado de verdade
+  const pfx = generateDemoCertificate(data.name, data.cnpj, 'demo1234');
+  const cert = readCertificate(pfx, 'demo1234');
   const company = await prisma.company.create({
     data: {
       organizationId: orgId,
       ...rest,
       logoColor: color,
-      certName: `${data.name}:${data.cnpj}`,
-      certIssuer: 'AC SIMULADA RFB v5 (certificado A1 de demonstração)',
-      certValidUntil: addDays(new Date(), 300),
+      certName: cert.cn,
+      certIssuer: cert.issuer,
+      certSerial: cert.serial,
+      certValidUntil: cert.notAfter,
       certUploadedAt: new Date(),
+      certPfx: new Uint8Array(pfx),
+      certPassword: 'demo1234',
+      sefazMode: 'ASSINADO',
       cscToken: randomDigits(32),
     },
   });
@@ -244,13 +257,14 @@ async function main() {
     mochila: await P({ sku: 'MOC-URB-01', name: 'Mochila Urbana Notebook 15"', ncm: '42029200', categoryId: cats['Acessórios'], price: 229.9, costPrice: 95, weight: 0.8, minStock: 3, supplierId: suppliers[1].id, featured: true }),
     meia: await P({ sku: 'MEI-KIT3-01', name: 'Meia Cano Médio (par)', ncm: '61159500', categoryId: cats['Acessórios'], price: 19.9, costPrice: 6.5, weight: 0.05, minStock: 20, supplierId: suppliers[0].id }),
     fone: await P({ sku: 'ELE-FONE-BT', name: 'Fone de Ouvido Bluetooth TWS', ncm: '85183000', categoryId: cats['Eletrônicos'], price: 199.9, costPrice: 82, ipiRate: 15, weight: 0.2, minStock: 6, supplierId: suppliers[1].id, featured: true, description: 'Fone sem fio com cancelamento de ruído e 30h de bateria.' }),
-    carregador: await P({ sku: 'ELE-CARR-65W', name: 'Carregador Turbo USB-C 65W', ncm: '85044010', categoryId: cats['Eletrônicos'], price: 149.9, costPrice: 55, ipiRate: 9.75, weight: 0.25, minStock: 10, supplierId: suppliers[1].id }),
+    carregador: await P({ sku: 'ELE-CARR-65W', name: 'Carregador Turbo USB-C 65W', ncm: '85044010', cest: '2105500', mvaST: 37.3, categoryId: cats['Eletrônicos'], price: 149.9, costPrice: 55, ipiRate: 9.75, weight: 0.25, minStock: 10, supplierId: suppliers[1].id }),
     cabo: await P({ sku: 'ELE-CABO-C', name: 'Cabo USB-C 2 metros', ncm: '85444200', categoryId: cats['Eletrônicos'], price: 39.9, costPrice: 11, ipiRate: 9.75, weight: 0.08, minStock: 25, supplierId: suppliers[1].id }),
     relogio: await P({ sku: 'ELE-WATCH-01', name: 'Smartwatch Fitness Pro', ncm: '85176299', categoryId: cats['Eletrônicos'], price: 499.9, costPrice: 230, ipiRate: 15, weight: 0.3, minStock: 3, supplierId: suppliers[1].id, featured: true }),
     ssd: await P({ sku: 'INF-SSD-480', name: 'SSD 480GB SATA III', ncm: '84717012', categoryId: cats['Informática'], price: 259.9, costPrice: 140, weight: 0.1, minStock: 5, supplierId: suppliers[1].id }),
     mouse: await P({ sku: 'INF-MOUSE-SF', name: 'Mouse sem fio ergonômico', ncm: '84716053', categoryId: cats['Informática'], price: 89.9, costPrice: 32, weight: 0.12, minStock: 8, supplierId: suppliers[1].id }),
     teclado: await P({ sku: 'INF-TECL-MEC', name: 'Teclado Mecânico RGB ABNT2', ncm: '84716052', categoryId: cats['Informática'], price: 329.9, costPrice: 150, weight: 1.0, minStock: 3, supplierId: suppliers[1].id }),
     protetor: await P({ sku: 'SAU-PROT-50', name: 'Protetor Solar FPS 50 - 200ml', ncm: '33049910', categoryId: cats['Saúde e beleza'], price: 69.9, costPrice: 24, weight: 0.25, minStock: 10, controlsLot: true, supplierId: suppliers[4].id }),
+    granola: await P({ sku: 'SAU-GRAN-KG', name: 'Granola Artesanal a granel (kg)', unit: 'KG', scaleCode: '00123', ncm: '19042000', categoryId: cats['Saúde e beleza'], price: 39.9, costPrice: 16, weight: 1, minStock: 5, supplierId: suppliers[4].id, description: 'Vendida por peso — use a etiqueta da balança no PDV (EAN 2 00123 ...).' }),
     whey: await P({ sku: 'SAU-WHEY-900', name: 'Whey Protein Concentrado 900g', ncm: '21069030', categoryId: cats['Saúde e beleza'], price: 159.9, costPrice: 78, weight: 1.0, minStock: 6, controlsLot: true, supplierId: suppliers[4].id, featured: true }),
   };
   // Produto fabricado (ficha técnica)
@@ -525,6 +539,42 @@ async function main() {
   if (recv) await prisma.paymentLink.create({ data: { companyId: moda.id, slug: `pg${randomDigits(8)}`, description: recv.description, amount: recv.amount, entryId: recv.id, customerName: recv.contactName, pixPayload: recv.pixPayload, expiresAt: recv.dueDate } });
   log('Loja virtual /loja/modabrasil, chave de API e webhook');
 
+  // ---------------- Recursos avançados (fase 2) ----------------
+  await prisma.coupon.createMany({ data: [
+    { companyId: moda.id, code: 'BEMVINDO10', type: 'PERCENTUAL', value: 10, minAmount: 100 },
+    { companyId: moda.id, code: 'FRETEGRATIS', type: 'FRETE_GRATIS', value: 0, minAmount: 150, maxUses: 100 },
+    { companyId: moda.id, code: 'VERAO30', type: 'VALOR', value: 30, minAmount: 200, validUntil: addDays(new Date(), 45) },
+  ] });
+  await prisma.store.update({ where: { companyId: moda.id }, data: { freeShippingUfs: ['SP'], seoTitle: 'Moda Brasil — roupas casuais com frete grátis em SP', seoDescription: 'Camisetas, calças, tênis e acessórios com 5% OFF no Pix, frete grátis para SP e entrega para todo o Brasil.' } });
+  // Imagens de produtos (geradas localmente como SVG e servidas por /api/files)
+  for (const [p, color] of [[simples.tenis, '#16a34a'], [simples.mochila, '#0f172a'], [simples.bone, '#2563eb'], [simples.fone, '#7c3aed']] as const) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><rect width="600" height="600" fill="${color}"/><text x="300" y="320" font-family="Arial" font-size="44" fill="#fff" text-anchor="middle">${p.name.split(' ').slice(0, 2).join(' ')}</text></svg>`;
+    const up = await prisma.upload.create({ data: { organizationId: org.id, filename: `${p.sku}.svg`, mime: 'image/svg+xml', size: svg.length, data: Buffer.from(svg) } });
+    await prisma.product.update({ where: { id: p.id }, data: { imageUrl: `/api/files/${up.id}`, images: [`/api/files/${up.id}`] } });
+  }
+  // Devolução parcial de um pedido faturado (NF-e de devolução referenciada + estorno)
+  const toReturn = await prisma.salesOrder.findFirst({ where: { companyId: moda.id, status: { in: ['ENTREGUE', 'ENVIADO'] }, origin: { not: 'PDV' } }, include: { items: true }, orderBy: { date: 'desc' } });
+  if (toReturn) await createReturn(actorModa, { salesOrderId: toReturn.id, kind: 'DEVOLUCAO', reason: 'Produto com tamanho diferente do esperado', refundMethod: 'ESTORNO', items: [{ salesOrderItemId: toReturn.items[0].id, quantity: 1, restock: true }] }).catch((e) => log('devolução ignorada:', e.message));
+  // Inventário concluído (com divergências) e um em aberto
+  const inv1 = await createInventoryCount(actorModa, { warehouseId: whLoja!.id, notes: 'Inventário mensal da loja física' });
+  await setCounts(actorModa, inv1.id, inv1.items.map((i, idx) => ({ productId: i.productId, counted: idx % 5 === 0 ? Math.max(0, i.expected - 1) : i.expected })));
+  await finishInventoryCount(actorModa, inv1.id);
+  await prisma.inventoryCount.update({ where: { id: inv1.id }, data: { createdAt: addDays(new Date(), -7), finishedAt: addDays(new Date(), -7) } });
+  await createInventoryCount(actorModa, { warehouseId: whModa!.id, categoryId: cats['Acessórios'], notes: 'Contagem cíclica de acessórios' });
+  // Transferência entre empresas do grupo com NF-e (CFOP 6152, SP → RJ)
+  await transferBetweenCompanies(actorModa, { toCompanyId: tech.id, items: [{ productId: simples.cabo.id, quantity: 20 }, { productId: simples.mouse.id, quantity: 5 }], emitInvoice: true }).catch((e) => log('transferência ignorada:', e.message));
+  // Manifestação do destinatário (DF-e)
+  const dist = await fetchDistribution(actorModa, 3);
+  await manifest(actorModa, dist[0].id, 'CIENCIA');
+  // Orçamento do mês corrente
+  for (const company of [moda, tech]) {
+    const charts = await prisma.chartAccount.findMany({ where: { companyId: company.id, code: { in: ['1.1.01', '1.1.02', '1.1.03', '2.2.01', '2.3.01', '2.4.01', '2.6.01'] } } });
+    const base: Record<string, number> = { '1.1.01': 30000, '1.1.02': 6000, '1.1.03': 15000, '2.2.01': 3800, '2.3.01': 7400, '2.4.01': 1500, '2.6.01': 2600 };
+    const now = new Date();
+    await saveBudget(company.id, charts.flatMap((c) => [0, 1].map((m) => ({ chartAccountId: c.id, year: now.getFullYear(), month: now.getMonth() + 1 + m > 12 ? 1 : now.getMonth() + 1 + m, amount: round2(base[c.code] * (company.id === tech.id ? 0.6 : 1)) }))));
+  }
+  log('Cupons, imagens, devolução, inventários, transferência entre empresas, manifestação e orçamento');
+
   await prisma.notification.createMany({ data: [
     { companyId: moda.id, title: 'Bem-vindo ao GestãoPro!', message: 'Este é um ambiente de demonstração com dados fictícios. Integrações externas são simuladas.', level: 'success', link: '/' },
     { companyId: moda.id, title: 'NF-e de entrada disponível', message: 'Há um XML de fornecedor aguardando lançamento.', level: 'info', link: '/compras/xml' },
@@ -532,6 +582,14 @@ async function main() {
   // Limites de crédito definidos após o histórico (para não bloquear a simulação)
   await prisma.contact.updateMany({ where: { organizationId: org.id, types: { has: 'CLIENTE' }, personType: 'PF', code: null }, data: { creditLimit: 5000 } });
   await prisma.contact.updateMany({ where: { organizationId: org.id, types: { has: 'CLIENTE' }, personType: 'PJ' }, data: { creditLimit: 80000 } });
+  // Processa a fila (e-mails da caixa de saída, webhooks) gerada pelas automações
+  let processed = 0;
+  for (let i = 0; i < 50; i++) {
+    const n = await processJobs(200);
+    processed += n;
+    if (!n) break;
+  }
+  log(`Fila processada: ${processed} tarefa(s)`);
   console.log('✅ Seed concluído!');
 }
 

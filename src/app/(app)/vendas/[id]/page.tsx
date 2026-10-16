@@ -2,14 +2,16 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Save, FileText, XCircle, Printer, Truck, PackageCheck, CheckCircle2, MoreHorizontal, Zap, Receipt } from 'lucide-react';
+import { ArrowLeft, Save, FileText, XCircle, Printer, Truck, PackageCheck, CheckCircle2, MoreHorizontal, Zap, Receipt, Undo2, Split } from 'lucide-react';
+import { toast } from 'sonner';
 import { useApi, useAction, openFile } from '@/lib/api';
+import { Dialog } from '@/components/ui/dialog';
 import { PageHeader, Field, DataTable, KV } from '@/components/common/page';
 import { EntityPicker, contactOption } from '@/components/common/picker';
 import { ItemsEditor, toRows, fromRows, newItem, itemTotal, type ItemRow } from '@/components/common/items';
 import { PromptDialog } from '@/components/common/prompt';
 import { Button } from '@/components/ui/button';
-import { Input, Select, Textarea } from '@/components/ui/input';
+import { Input, Select, Textarea, Checkbox } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge, StatusBadge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/components/ui/dropdown';
@@ -31,6 +33,8 @@ export default function SalesOrderPage() {
   const [items, setItems] = useState<ItemRow[]>([newItem()]);
   const [cancel, setCancel] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [retOpen, setRetOpen] = useState(false);
+  const [splitOpen, setSplitOpen] = useState(false);
   useEffect(() => {
     if (!data) return;
     setO({ ...data, date: toInputDate(data.date), expectedDate: toInputDate(data.expectedDate), customerLabel: data.customer.name });
@@ -67,6 +71,8 @@ export default function SalesOrderPage() {
           <Button variant="outline" onClick={() => router.push('/vendas')}><ArrowLeft /> Voltar</Button>
           {!isNew && <Button variant="outline" onClick={() => openFile(`/api/sales-orders/${id}/pdf`)}><Printer /> Imprimir</Button>}
           {!isNew && o.status === 'ABERTO' && <Button disabled={busy} onClick={() => invoice()}><FileText /> Faturar (emitir NF)</Button>}
+          {!isNew && o.status === 'ABERTO' && <Button variant="outline" onClick={() => setSplitOpen(true)}><Split /> Desmembrar pedido</Button>}
+          {!isNew && o.status && !['ABERTO', 'CANCELADO'].includes(o.status) && <Button variant="outline" onClick={() => setRetOpen(true)}><Undo2 /> Devolução / troca</Button>}
           {!isNew && o.status === 'FATURADO' && <Button asChild><Link href="/logistica/separacao"><PackageCheck /> Separar</Link></Button>}
           {!isNew && (
             <DropdownMenu>
@@ -96,6 +102,12 @@ export default function SalesOrderPage() {
             const done = FLOW.indexOf(o.status) >= i;
             return <div key={s} className="flex items-center gap-1"><div className={cn('rounded-full px-3 py-1 text-xs font-semibold', done ? 'bg-primary text-white' : 'bg-muted text-muted-foreground')}>{i + 1}. {s === 'ABERTO' ? 'Em aberto' : s.charAt(0) + s.slice(1).toLowerCase()}</div>{i < FLOW.length - 1 && <div className={cn('h-0.5 w-6', done ? 'bg-primary' : 'bg-muted')} />}</div>;
           })}
+        </div>
+      )}
+      {!isNew && (data?.parent || data?.children?.length > 0) && (
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+          {data?.parent && <span>Desmembrado do pedido <Link className="font-semibold underline" href={`/vendas/${data.parent.id}`}>nº {data.parent.number}</Link></span>}
+          {data?.children?.length > 0 && <span className="flex flex-wrap items-center gap-1">Pedidos desmembrados: {data.children.map((c: any) => <Link key={c.id} href={`/vendas/${c.id}`} className="inline-flex items-center gap-1 font-semibold underline">nº {c.number} <StatusBadge status={c.status} /> <span className="font-normal no-underline">{money(c.total)}</span></Link>)}</span>}
         </div>
       )}
       {o.status === 'CANCELADO' && <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">Pedido cancelado em {fmtDateTime(o.cancelledAt)}. {o.cancelReason}</div>}
@@ -140,6 +152,7 @@ export default function SalesOrderPage() {
                 {[['Estoque reservado', o.stockReserved], ['Estoque baixado', o.stockPosted], ['Financeiro lançado', o.financialPosted], ['Comissão calculada', o.commissionPosted]].map(([l, v]) => <div key={l as string} className="flex items-center gap-1">{v ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600" /> : <span className="h-3.5 w-3.5 rounded-full border" />}{l}</div>)}
               </CardContent></Card>
               {data?.invoices?.length > 0 && <Card><CardHeader><CardTitle>Notas fiscais</CardTitle></CardHeader><div className="divide-y">{data.invoices.map((inv: any) => <Link key={inv.id} href={`/fiscal/notas/${inv.id}`} className="flex items-center justify-between px-4 py-2 text-sm hover:bg-muted"><span>{inv.model} nº {inv.number}</span><StatusBadge status={inv.status} /></Link>)}</div></Card>}
+              {data?.returns?.length > 0 && <Card><CardHeader><CardTitle>Devoluções e trocas</CardTitle><Link href="/vendas/devolucoes" className="text-xs text-primary hover:underline">Ver todas</Link></CardHeader><div className="divide-y">{data.returns.map((r: any) => <Link key={r.id} href="/vendas/devolucoes" className="flex items-center justify-between px-4 py-1.5 text-xs hover:bg-muted"><span>{r.kind === 'TROCA' ? 'Troca' : 'Devolução'} nº {r.number} · {fmtDate(r.createdAt)}</span><span className="flex items-center gap-1">{money(r.total)} <StatusBadge status={r.status} /></span></Link>)}</div></Card>}
               {data?.entries?.length > 0 && <Card><CardHeader><CardTitle>Financeiro</CardTitle></CardHeader><div className="divide-y">{data.entries.map((e: any) => <div key={e.id} className="flex items-center justify-between px-4 py-1.5 text-xs"><span>{e.type === 'PAGAR' ? '↑' : '↓'} {fmtDate(e.dueDate)} · {e.description.replace(/.*\(/, '(')}</span><span className="flex items-center gap-1">{money(e.amount)} <StatusBadge status={e.status} /></span></div>)}</div></Card>}
               {shipment && <Card><CardHeader><CardTitle>Envio</CardTitle><Button size="sm" variant="outline" onClick={() => openFile(`/api/logistics/labels?ids=${shipment.id}`)}><Printer /> Etiqueta</Button></CardHeader><CardContent className="grid grid-cols-2 gap-2"><KV label="Transportadora" value={`${shipment.carrier} ${shipment.service}`} /><KV label="Frete" value={money(shipment.price)} /><KV label="Rastreio" value={shipment.trackingCode} /><KV label="Situação" value={<StatusBadge status={shipment.status} />} /></CardContent></Card>}
               {data?.commission && <Card className="p-4 text-sm">Comissão de <b>{data.seller?.name}</b>: {money(data.commission.amount)} ({data.commission.rate}%) <StatusBadge status={data.commission.status} /></Card>}
@@ -150,6 +163,132 @@ export default function SalesOrderPage() {
         </div>
       </div>
       <PromptDialog open={cancel} onOpenChange={setCancel} destructive title="Cancelar pedido" description="Notas autorizadas serão canceladas na SEFAZ (simulada), a reserva/estoque será estornada e as contas em aberto canceladas." label="Justificativa (mín. 15 caracteres)" minLength={15} confirmText="Cancelar pedido" onConfirm={(reason) => run('cancel', { reason }, 'Pedido cancelado')} />
+      {!isNew && data && <ReturnDialog open={retOpen} onOpenChange={setRetOpen} order={data} />}
+      {!isNew && data && <SplitDialog open={splitOpen} onOpenChange={setSplitOpen} order={data} onDone={(nid) => router.push(`/vendas/${nid}`)} />}
     </div>
+  );
+}
+
+/** Devolução / troca de itens de um pedido faturado */
+function ReturnDialog({ open, onOpenChange, order }: { open: boolean; onOpenChange: (o: boolean) => void; order: any }) {
+  const act = useAction();
+  const [kind, setKind] = useState('DEVOLUCAO');
+  const [refundMethod, setRefundMethod] = useState('ESTORNO');
+  const [reason, setReason] = useState('');
+  const [emitInvoice, setEmitInvoice] = useState(true);
+  const [lines, setLines] = useState<Record<string, { quantity: string; restock: boolean }>>({});
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (open) { setKind('DEVOLUCAO'); setRefundMethod('ESTORNO'); setReason(''); setEmitInvoice(true); setLines({}); }
+  }, [open]);
+  const returned: Record<string, number> = order.returned || {};
+  const items: any[] = order.items || [];
+  const avail = (it: any) => Math.max(0, round2(Number(it.quantity) - (Number(returned[it.id]) || 0)));
+  const line = (id: string) => lines[id] || { quantity: '', restock: true };
+  const setLine = (id: string, patch: Partial<{ quantity: string; restock: boolean }>) => setLines({ ...lines, [id]: { ...line(id), ...patch } });
+  const selected = items.map((it) => ({ it, q: Number(line(it.id).quantity) || 0 })).filter((x) => x.q > 0);
+  const invalid = selected.some((x) => x.q > avail(x.it) + 1e-9);
+  const total = round2(selected.reduce((a, x) => a + x.q * Number(x.it.unitPrice || 0), 0));
+  const submit = async () => {
+    setBusy(true);
+    const r: any = await act('POST', '/api/returns', {
+      salesOrderId: order.id, kind, refundMethod: kind === 'TROCA' ? 'NENHUM' : refundMethod, reason: reason.trim(), emitInvoice,
+      items: selected.map((x) => ({ salesOrderItemId: x.it.id, quantity: x.q, restock: line(x.it.id).restock })),
+    }, false);
+    setBusy(false);
+    if (r) {
+      toast.success(`${kind === 'TROCA' ? 'Troca' : 'Devolução'} nº ${r.number} registrada${emitInvoice ? ' — NF-e de devolução emitida' : ''}`);
+      onOpenChange(false);
+    }
+  };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} size="lg" title={`Devolução / troca — pedido nº ${order.number}`} description="Emite NF-e de devolução (CFOP 1202/2202, finalidade 4) referenciando a nota original, retorna o estoque e lança o estorno ou crédito no financeiro." footer={
+      <>
+        <span className="mr-auto self-center text-sm">Total: <b>{money(total)}</b></span>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>Voltar</Button>
+        <Button disabled={busy || !selected.length || invalid || reason.trim().length < 5} onClick={submit}><Undo2 /> Registrar {kind === 'TROCA' ? 'troca' : 'devolução'}</Button>
+      </>
+    }>
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <Field label="Tipo"><Select value={kind} onChange={(e) => setKind(e.target.value)}><option value="DEVOLUCAO">Devolução</option><option value="TROCA">Troca</option></Select></Field>
+          {kind !== 'TROCA' && <Field label="Reembolso"><Select value={refundMethod} onChange={(e) => setRefundMethod(e.target.value)}><option value="ESTORNO">Estorno ao cliente</option><option value="CREDITO">Crédito/abatimento em títulos</option><option value="NENHUM">Nenhum</option></Select></Field>}
+          <Field label="Motivo *" className="md:col-span-2" hint={`${reason.trim().length}/5 caracteres mínimos`}><Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} /></Field>
+          <Checkbox className="md:col-span-2" label="Emitir NF-e de devolução" checked={emitInvoice} onChange={(e) => setEmitInvoice(e.target.checked)} />
+        </div>
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="table-dense w-full">
+              <thead><tr><th>Item</th><th className="text-right">Vendido</th><th className="text-right">Disponível</th><th className="w-28 text-right">Qtd. a devolver</th><th className="text-center">Retornar ao estoque</th></tr></thead>
+              <tbody>
+                {items.map((it) => {
+                  const a = avail(it);
+                  const l = line(it.id);
+                  const over = (Number(l.quantity) || 0) > a + 1e-9;
+                  return (
+                    <tr key={it.id}>
+                      <td>{it.description || it.product?.name}</td>
+                      <td className="num">{num(it.quantity, 3)}</td>
+                      <td className="num">{num(a, 3)}</td>
+                      <td><Input type="number" min={0} max={a} step="any" disabled={a <= 0} className={cn('h-8 text-right', over && 'border-red-500')} value={l.quantity} onChange={(e) => setLine(it.id, { quantity: e.target.value })} /></td>
+                      <td className="text-center"><input type="checkbox" className="h-4 w-4" disabled={a <= 0} checked={l.restock} onChange={(e) => setLine(it.id, { restock: e.target.checked })} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        {invalid && <p className="text-xs text-red-600">Há quantidades acima do disponível para devolução.</p>}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Desmembra itens (total ou parcialmente) de um pedido em aberto para um novo pedido */
+function SplitDialog({ open, onOpenChange, order, onDone }: { open: boolean; onOpenChange: (o: boolean) => void; order: any; onDone: (id: string) => void }) {
+  const act = useAction();
+  const [qty, setQty] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (open) setQty({}); }, [open]);
+  const items: any[] = order.items || [];
+  const selected = items.map((it) => ({ it, q: Number(qty[it.id]) || 0 })).filter((x) => x.q > 0);
+  const invalid = selected.some((x) => x.q > Number(x.it.quantity) + 1e-9);
+  const submit = async () => {
+    setBusy(true);
+    const r: any = await act('POST', `/api/sales-orders/${order.id}/split`, { items: selected.map((x) => ({ itemId: x.it.id, quantity: x.q })) }, false);
+    setBusy(false);
+    if (r?.id) {
+      toast.success(`Pedido nº ${r.number} criado a partir do desmembramento`);
+      onOpenChange(false);
+      onDone(r.id);
+    }
+  };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} size="lg" title={`Desmembrar pedido nº ${order.number}`} description="Os itens/quantidades informados são movidos para um novo pedido do mesmo cliente (ex.: entrega parcial ou faturamento separado)." footer={
+      <>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>Voltar</Button>
+        <Button disabled={busy || !selected.length || invalid} onClick={submit}><Split /> Desmembrar</Button>
+      </>
+    }>
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="table-dense w-full">
+            <thead><tr><th>Item</th><th className="text-right">Qtd. no pedido</th><th className="text-right">Unitário</th><th className="w-36 text-right">Qtd. para novo pedido</th></tr></thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id}>
+                  <td>{it.description || it.product?.name}</td>
+                  <td className="num">{num(it.quantity, 3)}</td>
+                  <td className="num">{money(it.unitPrice)}</td>
+                  <td><Input type="number" min={0} max={it.quantity} step="any" className={cn('h-8 text-right', (Number(qty[it.id]) || 0) > Number(it.quantity) && 'border-red-500')} value={qty[it.id] || ''} onChange={(e) => setQty({ ...qty, [it.id]: e.target.value })} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      {invalid && <p className="mt-2 text-xs text-red-600">Quantidade maior que a do pedido.</p>}
+    </Dialog>
   );
 }
