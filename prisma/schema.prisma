@@ -1,0 +1,1283 @@
+// =============================================================================
+// GestãoPro — Schema do banco de dados (PostgreSQL + Prisma)
+//
+// Convenções:
+//  * Cadastros (produtos, contatos, serviços, listas de preço...) pertencem à
+//    Organização (conta) e são compartilhados entre as empresas (CNPJs).
+//  * Documentos transacionais (pedidos, notas, financeiro, estoque...) pertencem
+//    a uma Empresa (companyId) — permitindo visão separada ou consolidada.
+//  * Campos de status/tipo usam String (valores documentados nos comentários)
+//    para simplificar formulários genéricos e extensões.
+//  * Valores monetários usam Float com arredondamento em 2 casas na camada de
+//    serviço (ambiente demo). Em produção, prefira Decimal.
+// =============================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Conta, empresas, usuários e permissões
+// ----------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  /// UNIFICADO = saldo disponível soma depósitos de todas as empresas; SEPARADO = por empresa
+  stockMode String   @default("SEPARADO")
+  createdAt DateTime @default(now())
+
+  companies Company[]
+  users     User[]
+  roles     Role[]
+}
+
+model Company {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String // Razão social
+  tradeName      String? // Nome fantasia
+  cnpj           String
+  ie             String?
+  im             String?
+  /// SIMPLES | PRESUMIDO | REAL
+  taxRegime      String    @default("SIMPLES")
+  crt            Int       @default(1) // 1=Simples Nacional, 3=Regime Normal
+  email          String?
+  phone          String?
+  zip            String?
+  street         String?
+  number         String?
+  district       String?
+  city           String?
+  cityCode       String?
+  uf             String    @default("SP")
+  logoColor      String    @default("#16a34a")
+  // Fiscal
+  nfeEnvironment Int       @default(2) // 1=Produção 2=Homologação (sempre simulado)
+  nfeSeries      Int       @default(1)
+  nfceSeries     Int       @default(1)
+  cscId          String?   @default("000001")
+  cscToken       String?
+  certName       String?
+  certIssuer     String?
+  certValidUntil DateTime?
+  certUploadedAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users        UserCompany[]
+  warehouses   Warehouse[]
+}
+
+model Role {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  isAdmin        Boolean @default(false)
+  /// { modulo: "none" | "view" | "edit" }
+  permissions    Json    @default("{}")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  users        User[]
+}
+
+model User {
+  id             String    @id @default(cuid())
+  organizationId String
+  roleId         String
+  name           String
+  email          String    @unique
+  passwordHash   String
+  active         Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role          Role           @relation(fields: [roleId], references: [id])
+  companies     UserCompany[]
+  notifications Notification[]
+}
+
+model UserCompany {
+  userId    String
+  companyId String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@id([userId, companyId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String?
+  companyId String
+  title     String
+  message   String
+  level     String   @default("info") // info | warning | success | error
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, read])
+}
+
+/// Numeração sequencial por empresa (pedidos, notas, OS...)
+model Sequence {
+  companyId String
+  key       String
+  value     Int    @default(0)
+
+  @@id([companyId, key])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  createdAt DateTime @default(now())
+
+  @@index([companyId, createdAt])
+}
+
+// ----------------------------------------------------------------------------
+// Cadastros
+// ----------------------------------------------------------------------------
+
+model Contact {
+  id             String    @id @default(cuid())
+  organizationId String
+  code           String?
+  /// CLIENTE, FORNECEDOR, TRANSPORTADORA (pode acumular)
+  types          String[]
+  personType     String    @default("PF") // PF | PJ
+  name           String
+  tradeName      String?
+  document       String? // CPF/CNPJ
+  ie             String?
+  ieIndicator    Int       @default(9) // 1=Contribuinte 2=Isento 9=Não contribuinte
+  email          String?
+  phone          String?
+  mobile         String?
+  birthDate      DateTime?
+  creditLimit    Float     @default(0)
+  priceListId    String?
+  sellerId       String?
+  notes          String?
+  active         Boolean   @default(true)
+  // Endereço principal (desnormalizado para agilidade em notas e etiquetas)
+  zip            String?
+  street         String?
+  number         String?
+  complement     String?
+  district       String?
+  city           String?
+  uf             String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  addresses      ContactAddress[]
+  persons        ContactPerson[]
+  priceList      PriceList?       @relation(fields: [priceListId], references: [id])
+  seller         Seller?          @relation(fields: [sellerId], references: [id])
+  purchaseOrders PurchaseOrder[]
+  quotes         Quote[]
+  salesOrders    SalesOrder[]
+  serviceOrders  ServiceOrder[]
+
+  @@index([organizationId, name])
+}
+
+model ContactAddress {
+  id         String  @id @default(cuid())
+  contactId  String
+  label      String  @default("Entrega") // Entrega | Cobrança | Outro
+  zip        String?
+  street     String?
+  number     String?
+  complement String?
+  district   String?
+  city       String?
+  uf         String?
+  contact    Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+}
+
+model ContactPerson {
+  id        String  @id @default(cuid())
+  contactId String
+  name      String
+  role      String?
+  email     String?
+  phone     String?
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+}
+
+/// Vendedores, funcionários e técnicos
+model Seller {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  /// VENDEDOR | FUNCIONARIO | TECNICO
+  kind           String   @default("VENDEDOR")
+  email          String?
+  phone          String?
+  document       String?
+  commissionRate Float    @default(0)
+  /// FATURAMENTO (libera ao faturar) | RECEBIMENTO (libera ao receber)
+  commissionBase String   @default("FATURAMENTO")
+  userId         String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  contacts Contact[]
+}
+
+model Category {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  parentId       String?
+  products       Product[]
+}
+
+model Product {
+  id             String   @id @default(cuid())
+  organizationId String
+  sku            String
+  name           String
+  /// SIMPLES | VARIACAO_PAI | VARIACAO | KIT | FABRICADO | MATERIA_PRIMA
+  kind           String   @default("SIMPLES")
+  parentId       String?
+  /// Atributos da variação, ex.: {"Cor":"Azul","Tamanho":"M"}; no pai, {"Cor":["Azul"],...}
+  attributes     Json?
+  gtin           String?
+  unit           String   @default("UN")
+  ncm            String?
+  cest           String?
+  origin         Int      @default(0) // 0=Nacional 1/2=Estrangeira...
+  brand          String?
+  categoryId     String?
+  price          Float    @default(0)
+  costPrice      Float    @default(0)
+  ipiRate        Float    @default(0)
+  weight         Float    @default(0.3) // kg
+  width          Float    @default(15) // cm
+  height         Float    @default(10)
+  length         Float    @default(20)
+  controlsStock  Boolean  @default(true)
+  controlsLot    Boolean  @default(false)
+  minStock       Float    @default(0)
+  maxStock       Float    @default(0)
+  location       String? // Localização física (corredor/prateleira)
+  supplierId     String? // Fornecedor padrão (para reposição automática)
+  imageUrl       String?
+  description    String?
+  active         Boolean  @default(true)
+  featured       Boolean  @default(false) // Destaque na loja virtual
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  category      Category?           @relation(fields: [categoryId], references: [id])
+  parent        Product?            @relation("Variations", fields: [parentId], references: [id], onDelete: Cascade)
+  variations    Product[]           @relation("Variations")
+  components    ProductComponent[]  @relation("KitParent")
+  usedIn        ProductComponent[]  @relation("KitComponent")
+  balances      StockBalance[]
+  lots          ProductLot[]
+  priceItems    PriceListItem[]
+  listings      Listing[]
+  purchaseItems PurchaseOrderItem[]
+
+  @@unique([organizationId, sku])
+  @@index([organizationId, name])
+}
+
+/// Composição (kit de venda ou ficha técnica de produção)
+model ProductComponent {
+  id          String  @id @default(cuid())
+  productId   String
+  componentId String
+  quantity    Float
+  product     Product @relation("KitParent", fields: [productId], references: [id], onDelete: Cascade)
+  component   Product @relation("KitComponent", fields: [componentId], references: [id])
+}
+
+model Service {
+  id             String   @id @default(cuid())
+  organizationId String
+  code           String
+  name           String
+  price          Float    @default(0)
+  unit           String   @default("UN")
+  /// Item da lista de serviços (LC 116/2003), ex.: 14.01
+  serviceCode    String?
+  cnae           String?
+  issRate        Float    @default(5)
+  description    String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+}
+
+model PriceList {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  /// VAREJO | ATACADO | PROMOCAO | CANAL
+  type           String    @default("VAREJO")
+  /// Ajuste percentual aplicado sobre o preço base quando não há preço fixo no item
+  adjustPercent  Float     @default(0)
+  minQuantity    Float     @default(0)
+  validFrom      DateTime?
+  validUntil     DateTime?
+  active         Boolean   @default(true)
+
+  items    PriceListItem[]
+  contacts Contact[]
+}
+
+model PriceListItem {
+  id          String    @id @default(cuid())
+  priceListId String
+  productId   String
+  price       Float
+  priceList   PriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([priceListId, productId])
+}
+
+/// Cadastros personalizados (matérias-primas, embalagens, técnicos, etc.)
+model CustomEntityType {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  slug           String
+  icon           String?
+  /// [{ key, label, type: text|number|date|select|boolean, options?: string[], required?: boolean }]
+  fields         Json
+  createdAt      DateTime @default(now())
+
+  records CustomEntityRecord[]
+
+  @@unique([organizationId, slug])
+}
+
+model CustomEntityRecord {
+  id        String           @id @default(cuid())
+  typeId    String
+  data      Json
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  type      CustomEntityType @relation(fields: [typeId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// Estoque
+// ----------------------------------------------------------------------------
+
+model Warehouse {
+  id        String  @id @default(cuid())
+  companyId String
+  name      String
+  code      String?
+  isDefault Boolean @default(false)
+  /// Considera o saldo deste depósito no "disponível" enviado aos canais
+  available Boolean @default(true)
+  active    Boolean @default(true)
+
+  company  Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  balances StockBalance[]
+}
+
+model StockBalance {
+  id          String    @id @default(cuid())
+  productId   String
+  warehouseId String
+  quantity    Float     @default(0)
+  reserved    Float     @default(0)
+  avgCost     Float     @default(0)
+  updatedAt   DateTime  @updatedAt
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, warehouseId])
+}
+
+model StockMovement {
+  id           String   @id @default(cuid())
+  companyId    String
+  productId    String
+  warehouseId  String
+  /// ENTRADA | SAIDA | AJUSTE | TRANSFERENCIA_ENTRADA | TRANSFERENCIA_SAIDA | RESERVA | LIBERACAO
+  type         String
+  quantity     Float // com sinal (+ entrada, - saída)
+  balanceAfter Float
+  unitCost     Float    @default(0)
+  /// MANUAL | PEDIDO_VENDA | PDV | COMPRA | NFE_ENTRADA | PRODUCAO | INVENTARIO | LOJA | INTEGRACAO | TRANSFERENCIA | ESTORNO | OS
+  origin       String   @default("MANUAL")
+  originId     String?
+  originLabel  String?
+  lotNumber    String?
+  notes        String?
+  userName     String?
+  createdAt    DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([productId])
+}
+
+model ProductLot {
+  id             String    @id @default(cuid())
+  productId      String
+  warehouseId    String
+  lotNumber      String
+  manufacturedAt DateTime?
+  expiresAt      DateTime?
+  quantity       Float     @default(0)
+  createdAt      DateTime  @default(now())
+  product        Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, warehouseId, lotNumber])
+}
+
+// ----------------------------------------------------------------------------
+// Compras
+// ----------------------------------------------------------------------------
+
+model PurchaseOrder {
+  id              String    @id @default(cuid())
+  companyId       String
+  number          Int
+  supplierId      String
+  warehouseId     String?
+  /// ABERTO | ENVIADO | EM_CONFERENCIA | RECEBIDO | CANCELADO
+  status          String    @default("ABERTO")
+  date            DateTime  @default(now())
+  expectedDate    DateTime?
+  receivedAt      DateTime?
+  freight         Float     @default(0)
+  discount        Float     @default(0)
+  otherCosts      Float     @default(0)
+  subtotal        Float     @default(0)
+  total           Float     @default(0)
+  installments    Int       @default(1)
+  paymentTermDays Int       @default(30)
+  paymentMethod   String?   @default("BOLETO")
+  nfeKey          String?
+  nfeNumber       String?
+  notes           String?
+  autoGenerated   Boolean   @default(false)
+  stockPosted     Boolean   @default(false)
+  financialPosted Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+
+  supplier Contact             @relation(fields: [supplierId], references: [id])
+  items    PurchaseOrderItem[]
+
+  @@unique([companyId, number])
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  productId       String
+  description     String
+  quantity        Float
+  checkedQty      Float         @default(0) // Conferência no check-in
+  unitCost        Float
+  total           Float
+  lotNumber       String?
+  expiresAt       DateTime?
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product         Product       @relation(fields: [productId], references: [id])
+}
+
+/// NF-e de entrada importada via XML
+model InboundInvoice {
+  id              String   @id @default(cuid())
+  companyId       String
+  accessKey       String
+  number          String
+  series          String
+  issueDate       DateTime
+  supplierId      String?
+  supplierName    String
+  supplierCnpj    String
+  total           Float
+  productsTotal   Float
+  freight         Float    @default(0)
+  icmsValue       Float    @default(0)
+  ipiValue        Float    @default(0)
+  /// PENDENTE | LANCADA | IGNORADA
+  status          String   @default("PENDENTE")
+  purchaseOrderId String?
+  /// [{ code, description, ncm, cfop, unit, quantity, unitPrice, total, gtin, productId? }]
+  items           Json
+  /// [{ number, dueDate, amount }]
+  duplicates      Json     @default("[]")
+  xml             String
+  createdAt       DateTime @default(now())
+
+  @@unique([companyId, accessKey])
+}
+
+// ----------------------------------------------------------------------------
+// Vendas
+// ----------------------------------------------------------------------------
+
+model SalesChannel {
+  id          String    @id @default(cuid())
+  companyId   String
+  /// Identificador do conector, ex.: MERCADO_LIVRE, SHOPEE, LOJA_VIRTUAL, PDV, MANUAL
+  provider    String
+  name        String
+  /// MARKETPLACE | ECOMMERCE | DELIVERY | PROPRIO | ERP | LOGISTICA | PAGAMENTO
+  category    String    @default("MARKETPLACE")
+  /// CONECTADO | DESCONECTADO | ERRO
+  status      String    @default("DESCONECTADO")
+  storeName   String?
+  syncStock   Boolean   @default(true)
+  syncPrice   Boolean   @default(true)
+  autoImport  Boolean   @default(true)
+  priceListId String?
+  /// Taxa/comissão do marketplace em % (para lucratividade por canal)
+  feePercent  Float     @default(0)
+  warehouseId String?
+  lastSyncAt  DateTime?
+  config      Json      @default("{}")
+  createdAt   DateTime  @default(now())
+
+  listings Listing[]
+  logs     IntegrationLog[]
+}
+
+/// Anúncios nos canais de venda
+model Listing {
+  id          String       @id @default(cuid())
+  channelId   String
+  productId   String
+  externalId  String
+  title       String
+  price       Float
+  stock       Float        @default(0)
+  /// ATIVO | PAUSADO | SEM_ESTOQUE | ENCERRADO
+  status      String       @default("ATIVO")
+  listingType String? // ex.: Clássico / Premium
+  permalink   String?
+  lastSyncAt  DateTime?
+  createdAt   DateTime     @default(now())
+  channel     SalesChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, productId])
+}
+
+model IntegrationLog {
+  id        String       @id @default(cuid())
+  channelId String
+  /// PEDIDO | ESTOQUE | PRECO | ANUNCIO | CONEXAO | ERRO
+  type      String
+  message   String
+  payload   Json?
+  success   Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  channel   SalesChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, createdAt])
+}
+
+model Quote {
+  id            String    @id @default(cuid())
+  companyId     String
+  number        Int
+  customerId    String
+  sellerId      String?
+  /// RASCUNHO | ENVIADA | APROVADA | RECUSADA | CONVERTIDA | EXPIRADA
+  status        String    @default("RASCUNHO")
+  date          DateTime  @default(now())
+  validUntil    DateTime?
+  priceListId   String?
+  subtotal      Float     @default(0)
+  discount      Float     @default(0)
+  freight       Float     @default(0)
+  total         Float     @default(0)
+  paymentTerms  String?
+  deliveryTerms String?
+  notes         String?
+  salesOrderId  String?
+  createdAt     DateTime  @default(now())
+
+  customer Contact     @relation(fields: [customerId], references: [id])
+  items    QuoteItem[]
+
+  @@unique([companyId, number])
+}
+
+model QuoteItem {
+  id          String  @id @default(cuid())
+  quoteId     String
+  productId   String?
+  serviceId   String?
+  description String
+  quantity    Float
+  unitPrice   Float
+  discount    Float   @default(0)
+  total       Float
+  quote       Quote   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+}
+
+model SalesOrder {
+  id               String    @id @default(cuid())
+  companyId        String
+  number           Int
+  customerId       String
+  sellerId         String?
+  channelId        String?
+  externalId       String? // Nº do pedido no marketplace / loja
+  /// MANUAL | PDV | LOJA | INTEGRACAO | IMPORTACAO | PROPOSTA | API | OS
+  origin           String    @default("MANUAL")
+  /// ABERTO | FATURADO | SEPARADO | ENVIADO | ENTREGUE | CANCELADO
+  status           String    @default("ABERTO")
+  date             DateTime  @default(now())
+  expectedDate     DateTime?
+  priceListId      String?
+  warehouseId      String?
+  subtotal         Float     @default(0)
+  discount         Float     @default(0)
+  freight          Float     @default(0)
+  otherCosts       Float     @default(0)
+  total            Float     @default(0)
+  totalCost        Float     @default(0)
+  channelFee       Float     @default(0)
+  /// DINHEIRO | PIX | BOLETO | CARTAO_CREDITO | CARTAO_DEBITO | MARKETPLACE | LINK
+  paymentMethod    String    @default("BOLETO")
+  installments     Int       @default(1)
+  paymentTermDays  Int       @default(30)
+  paidOnCreate     Boolean   @default(false) // Pagamento já capturado (PDV, loja, marketplace)
+  carrier          String?
+  shippingService  String?
+  shipTo           Json? // Endereço de entrega
+  notes            String?
+  internalNotes    String?
+  stockReserved    Boolean   @default(false)
+  stockPosted      Boolean   @default(false)
+  financialPosted  Boolean   @default(false)
+  commissionPosted Boolean   @default(false)
+  invoiceId        String?
+  quoteId          String?
+  cashSessionId    String?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  invoicedAt       DateTime?
+  separatedAt      DateTime?
+  shippedAt        DateTime?
+  deliveredAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  customer  Contact          @relation(fields: [customerId], references: [id])
+  items     SalesOrderItem[]
+  shipments Shipment[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([companyId, date])
+}
+
+model SalesOrderItem {
+  id           String     @id @default(cuid())
+  salesOrderId String
+  productId    String?
+  serviceId    String?
+  sku          String?
+  description  String
+  quantity     Float
+  unitPrice    Float
+  discount     Float      @default(0)
+  total        Float
+  unitCost     Float      @default(0)
+  pickedQty    Float      @default(0)
+  packedQty    Float      @default(0)
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+}
+
+model Commission {
+  id           String    @id @default(cuid())
+  companyId    String
+  sellerId     String
+  salesOrderId String
+  orderNumber  Int
+  baseAmount   Float
+  rate         Float
+  amount       Float
+  /// PENDENTE | LIBERADA | PAGA | CANCELADA
+  status       String    @default("PENDENTE")
+  releasedAt   DateTime?
+  paidAt       DateTime?
+  payableId    String?
+  createdAt    DateTime  @default(now())
+
+  @@index([companyId, sellerId])
+}
+
+// ----------------------------------------------------------------------------
+// PDV / Frente de caixa
+// ----------------------------------------------------------------------------
+
+model CashSession {
+  id             String         @id @default(cuid())
+  companyId      String
+  register       String         @default("Caixa 01")
+  userName       String
+  openingAmount  Float
+  closingAmount  Float?
+  expectedAmount Float?
+  /// ABERTO | FECHADO
+  status         String         @default("ABERTO")
+  openedAt       DateTime       @default(now())
+  closedAt       DateTime?
+  movements      CashMovement[]
+}
+
+model CashMovement {
+  id        String      @id @default(cuid())
+  sessionId String
+  /// ABERTURA | VENDA | SANGRIA | SUPRIMENTO | FECHAMENTO
+  type      String
+  method    String      @default("DINHEIRO")
+  amount    Float
+  notes     String?
+  orderId   String?
+  createdAt DateTime    @default(now())
+  session   CashSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// Fiscal
+// ----------------------------------------------------------------------------
+
+/// Natureza de operação (regras de CFOP/tributação por operação)
+model OperationNature {
+  id                 String  @id @default(cuid())
+  companyId          String
+  name               String
+  /// VENDA | DEVOLUCAO | REMESSA | NFCE | SERVICO | COMPRA
+  kind               String  @default("VENDA")
+  direction          String  @default("SAIDA") // SAIDA | ENTRADA
+  cfopIntra          String  @default("5102")
+  cfopInter          String  @default("6102")
+  icmsCst            String  @default("00") // Regime normal
+  csosn              String  @default("102") // Simples Nacional
+  icmsRateIntra      Float   @default(18)
+  icmsRateInter      Float   @default(12)
+  ipiCst             String  @default("53")
+  pisCst             String  @default("01")
+  cofinsCst          String  @default("01")
+  pisRate            Float   @default(1.65)
+  cofinsRate         Float   @default(7.6)
+  issRate            Float   @default(5)
+  finalidade         Int     @default(1) // 1=Normal 4=Devolução
+  movesStock         Boolean @default(true)
+  generatesFinancial Boolean @default(true)
+  isDefault          Boolean @default(false)
+  notes              String?
+}
+
+model Invoice {
+  id               String    @id @default(cuid())
+  companyId        String
+  /// NFE (55) | NFCE (65) | NFSE
+  model            String
+  number           Int
+  series           Int       @default(1)
+  accessKey        String?
+  /// RASCUNHO | AUTORIZADA | REJEITADA | CANCELADA
+  status           String    @default("RASCUNHO")
+  natureId         String?
+  natureName       String
+  direction        String    @default("SAIDA")
+  customerId       String?
+  customerName     String
+  customerDoc      String?
+  customerUf       String?
+  salesOrderId     String?
+  serviceOrderId   String?
+  issueDate        DateTime  @default(now())
+  productsTotal    Float     @default(0)
+  servicesTotal    Float     @default(0)
+  freight          Float     @default(0)
+  discount         Float     @default(0)
+  icmsBase         Float     @default(0)
+  icmsValue        Float     @default(0)
+  ipiValue         Float     @default(0)
+  pisValue         Float     @default(0)
+  cofinsValue      Float     @default(0)
+  issValue         Float     @default(0)
+  approxTaxes      Float     @default(0) // Lei da transparência (IBPT)
+  total            Float     @default(0)
+  protocol         String?
+  authorizedAt     DateTime?
+  rejectionCode    String?
+  rejectionReason  String?
+  cancelReason     String?
+  cancelProtocol   String?
+  cancelledAt      DateTime?
+  xml              String?
+  verificationCode String? // NFS-e
+  additionalInfo   String?
+  createdAt        DateTime  @default(now())
+
+  items  InvoiceItem[]
+  events InvoiceEvent[]
+
+  @@unique([companyId, model, series, number])
+  @@index([companyId, issueDate])
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  productId   String?
+  serviceId   String?
+  code        String
+  description String
+  ncm         String?
+  cfop        String?
+  cst         String?
+  unit        String  @default("UN")
+  quantity    Float
+  unitPrice   Float
+  total       Float
+  icmsBase    Float   @default(0)
+  icmsRate    Float   @default(0)
+  icmsValue   Float   @default(0)
+  ipiRate     Float   @default(0)
+  ipiValue    Float   @default(0)
+  pisRate     Float   @default(0)
+  pisValue    Float   @default(0)
+  cofinsRate  Float   @default(0)
+  cofinsValue Float   @default(0)
+  issRate     Float   @default(0)
+  issValue    Float   @default(0)
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model InvoiceEvent {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  /// TRANSMISSAO | AUTORIZACAO | REJEICAO | CANCELAMENTO | CCE
+  type        String
+  description String
+  protocol    String?
+  code        String?
+  createdAt   DateTime @default(now())
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// Financeiro
+// ----------------------------------------------------------------------------
+
+model BankAccount {
+  id             String   @id @default(cuid())
+  companyId      String
+  name           String
+  /// CAIXA | CORRENTE | POUPANCA | CONTA_DIGITAL | CARTAO
+  type           String   @default("CORRENTE")
+  bankCode       String?
+  bankName       String?
+  agency         String?
+  accountNumber  String?
+  pixKey         String?
+  initialBalance Float    @default(0)
+  isDefault      Boolean  @default(false)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  transactions BankTransaction[]
+}
+
+/// Plano de contas (categorias financeiras)
+model ChartAccount {
+  id        String  @id @default(cuid())
+  companyId String
+  code      String
+  name      String
+  /// RECEITA | DESPESA
+  type      String
+  /// Grupo no DRE: RECEITA_BRUTA | DEDUCOES | CMV | DESPESA_OPERACIONAL | DESPESA_ADMINISTRATIVA | DESPESA_PESSOAL | DESPESA_FINANCEIRA | RECEITA_FINANCEIRA | IMPOSTOS | OUTRAS
+  dreGroup  String  @default("DESPESA_OPERACIONAL")
+  parentId  String?
+  active    Boolean @default(true)
+}
+
+model CostCenter {
+  id        String  @id @default(cuid())
+  companyId String
+  code      String?
+  name      String
+  active    Boolean @default(true)
+}
+
+model FinancialEntry {
+  id             String    @id @default(cuid())
+  companyId      String
+  /// RECEBER | PAGAR
+  type           String
+  description    String
+  contactId      String?
+  contactName    String?
+  documentNumber String?
+  issueDate      DateTime  @default(now())
+  competenceDate DateTime  @default(now())
+  dueDate        DateTime
+  amount         Float
+  paidAmount     Float     @default(0)
+  interest       Float     @default(0)
+  fine           Float     @default(0)
+  discountAmount Float     @default(0)
+  /// ABERTO | PARCIAL | PAGO | CANCELADO   (vencido é derivado: ABERTO + dueDate < hoje)
+  status         String    @default("ABERTO")
+  paymentDate    DateTime?
+  paymentMethod  String?
+  chartAccountId String?
+  costCenterId   String?
+  bankAccountId  String?
+  installment    Int       @default(1)
+  installments   Int       @default(1)
+  /// MANUAL | VENDA | NFE | COMPRA | NFE_ENTRADA | OS | PDV | COMISSAO | LOJA | INTEGRACAO
+  origin         String    @default("MANUAL")
+  originId       String?
+  boletoNumber   String? // Nosso número
+  boletoLine     String? // Linha digitável
+  boletoBarcode  String?
+  pixPayload     String?
+  notes          String?
+  createdAt      DateTime  @default(now())
+
+  @@index([companyId, type, status, dueDate])
+}
+
+model BankTransaction {
+  id            String      @id @default(cuid())
+  companyId     String
+  bankAccountId String
+  date          DateTime
+  description   String
+  amount        Float // + crédito / - débito
+  /// MANUAL | PAGAMENTO | OFX | TRANSFERENCIA | PIX | BOLETO | POS | TARIFA
+  source        String      @default("MANUAL")
+  fitId         String? // ID da transação no OFX
+  reconciled    Boolean     @default(false)
+  entryId       String?
+  counterpart   String?
+  createdAt     DateTime    @default(now())
+  bankAccount   BankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, date])
+}
+
+model PaymentLink {
+  id           String    @id @default(cuid())
+  companyId    String
+  slug         String    @unique
+  description  String
+  amount       Float
+  /// PIX | BOLETO | CARTAO | TODOS
+  methods      String    @default("TODOS")
+  /// ATIVO | PAGO | EXPIRADO | CANCELADO
+  status       String    @default("ATIVO")
+  entryId      String?
+  salesOrderId String?
+  customerName String?
+  pixPayload   String?
+  paidAt       DateTime?
+  paidMethod   String?
+  expiresAt    DateTime?
+  createdAt    DateTime  @default(now())
+}
+
+model PosTerminal {
+  id            String   @id @default(cuid())
+  companyId     String
+  name          String
+  serial        String
+  acquirer      String   @default("Stone")
+  bankAccountId String?
+  debitFee      Float    @default(1.39)
+  creditFee     Float    @default(3.19)
+  pixFee        Float    @default(0.49)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+}
+
+model PosTransaction {
+  id           String   @id @default(cuid())
+  companyId    String
+  terminalId   String
+  /// DEBITO | CREDITO | PIX
+  method       String
+  installments Int      @default(1)
+  amount       Float
+  fee          Float
+  netAmount    Float
+  nsu          String
+  authCode     String
+  brand        String?
+  /// APROVADA | NEGADA | ESTORNADA
+  status       String   @default("APROVADA")
+  orderId      String?
+  createdAt    DateTime @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Produção
+// ----------------------------------------------------------------------------
+
+model ProductionOrder {
+  id          String    @id @default(cuid())
+  companyId   String
+  number      Int
+  productId   String
+  quantity    Float
+  producedQty Float     @default(0)
+  warehouseId String?
+  /// PLANEJADA | EM_PRODUCAO | FINALIZADA | CANCELADA
+  status      String    @default("PLANEJADA")
+  startDate   DateTime  @default(now())
+  dueDate     DateTime?
+  finishedAt  DateTime?
+  responsible String?
+  notes       String?
+  totalCost   Float     @default(0)
+  lotNumber   String?
+  createdAt   DateTime  @default(now())
+
+  items ProductionOrderItem[]
+
+  @@unique([companyId, number])
+}
+
+model ProductionOrderItem {
+  id                String          @id @default(cuid())
+  productionOrderId String
+  componentId       String
+  description       String
+  requiredQty       Float
+  consumedQty       Float           @default(0)
+  unitCost          Float           @default(0)
+  productionOrder   ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// Ordens de serviço
+// ----------------------------------------------------------------------------
+
+model ServiceOrder {
+  id              String    @id @default(cuid())
+  companyId       String
+  number          Int
+  customerId      String
+  technicianId    String?
+  /// ABERTA | ORCAMENTO | APROVADA | EM_EXECUCAO | AGUARDANDO_PECA | CONCLUIDA | FATURADA | CANCELADA
+  status          String    @default("ABERTA")
+  priority        String    @default("NORMAL")
+  equipment       String?
+  brand           String?
+  model           String?
+  serialNumber    String?
+  accessories     String?
+  problem         String
+  diagnosis       String?
+  solution        String?
+  openedAt        DateTime  @default(now())
+  dueDate         DateTime?
+  finishedAt      DateTime?
+  servicesTotal   Float     @default(0)
+  productsTotal   Float     @default(0)
+  discount        Float     @default(0)
+  total           Float     @default(0)
+  invoiceId       String?
+  salesOrderId    String?
+  financialPosted Boolean   @default(false)
+  stockPosted     Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+
+  customer Contact               @relation(fields: [customerId], references: [id])
+  items    ServiceOrderItem[]
+  history  ServiceOrderHistory[]
+
+  @@unique([companyId, number])
+}
+
+model ServiceOrderItem {
+  id             String       @id @default(cuid())
+  serviceOrderId String
+  /// SERVICO | PRODUTO
+  kind           String
+  productId      String?
+  serviceId      String?
+  description    String
+  quantity       Float
+  unitPrice      Float
+  total          Float
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+}
+
+model ServiceOrderHistory {
+  id             String       @id @default(cuid())
+  serviceOrderId String
+  status         String
+  description    String
+  userName       String?
+  createdAt      DateTime     @default(now())
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// Logística
+// ----------------------------------------------------------------------------
+
+model Shipment {
+  id           String     @id @default(cuid())
+  companyId    String
+  salesOrderId String
+  /// CORREIOS | MELHOR_ENVIO | GESTAO_ENVIOS | PROPRIA
+  provider     String
+  carrier      String // Correios, Jadlog, Loggi...
+  service      String // PAC, SEDEX, .Package...
+  price        Float
+  deadlineDays Int
+  weight       Float
+  height       Float      @default(10)
+  width        Float      @default(15)
+  length       Float      @default(20)
+  trackingCode String?
+  /// PENDENTE | ETIQUETA_GERADA | POSTADO | EM_TRANSITO | SAIU_PARA_ENTREGA | ENTREGUE | CANCELADO
+  status       String     @default("PENDENTE")
+  labelAt      DateTime?
+  postedAt     DateTime?
+  deliveredAt  DateTime?
+  /// [{ date, status, description, location }]
+  events       Json       @default("[]")
+  createdAt    DateTime   @default(now())
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// Integrações, API e webhooks
+// ----------------------------------------------------------------------------
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  companyId  String
+  name       String
+  prefix     String
+  keyHash    String    @unique
+  lastUsedAt DateTime?
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+}
+
+model Webhook {
+  id        String   @id @default(cuid())
+  companyId String
+  url       String
+  events    String[]
+  secret    String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  deliveries WebhookDelivery[]
+}
+
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  webhookId  String
+  event      String
+  payload    Json
+  statusCode Int?
+  success    Boolean  @default(false)
+  response   String?
+  durationMs Int      @default(0)
+  createdAt  DateTime @default(now())
+  webhook    Webhook  @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// Loja virtual
+// ----------------------------------------------------------------------------
+
+model Store {
+  id                String   @id @default(cuid())
+  companyId         String   @unique
+  slug              String   @unique
+  name              String
+  published         Boolean  @default(true)
+  primaryColor      String   @default("#16a34a")
+  accentColor       String   @default("#0f172a")
+  logoText          String?
+  bannerTitle       String   @default("Bem-vindo à nossa loja")
+  bannerSubtitle    String   @default("Os melhores produtos com entrega para todo o Brasil")
+  bannerImage       String?
+  aboutText         String?
+  whatsapp          String?
+  freeShippingAbove Float    @default(0)
+  pixDiscount       Float    @default(5)
+  /// Seções exibidas na home, na ordem: ["banner","destaques","categorias","todos","sobre"]
+  sections          Json     @default("[\"banner\",\"destaques\",\"categorias\",\"todos\",\"sobre\"]")
+  priceListId       String?
+  warehouseId       String?
+  updatedAt         DateTime @updatedAt
+}
+
+// ----------------------------------------------------------------------------
+// Automações
+// ----------------------------------------------------------------------------
+
+model Automation {
+  id        String    @id @default(cuid())
+  companyId String
+  key       String
+  active    Boolean   @default(true)
+  config    Json      @default("{}")
+  runs      Int       @default(0)
+  lastRunAt DateTime?
+
+  @@unique([companyId, key])
+}
+
+model AutomationLog {
+  id        String   @id @default(cuid())
+  companyId String
+  key       String
+  event     String
+  entityId  String?
+  success   Boolean  @default(true)
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([companyId, createdAt])
+}
+
+model AiMessage {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String
+  role      String // user | assistant
+  content   String
+  createdAt DateTime @default(now())
+}
