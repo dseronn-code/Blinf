@@ -115,6 +115,7 @@ export const MENU: MenuGroup[] = [
       { label: 'Usuários', href: '/configuracoes/usuarios' },
       { label: 'Perfis e permissões', href: '/configuracoes/perfis' },
       { label: 'Preferências', href: '/configuracoes/preferencias' },
+      { label: 'Modelos de e-mail', href: '/configuracoes/modelos-email' },
       { label: 'Segurança (2FA)', href: '/configuracoes/seguranca' },
       { label: 'Sistema e auditoria', href: '/configuracoes/sistema' },
     ],

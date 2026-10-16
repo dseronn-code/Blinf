@@ -29,7 +29,7 @@ const STATUS: Record<string, [string, string]> = {
   CONECTADO: ['Conectado', 'green'], DESCONECTADO: ['Desconectado', 'gray'], ERRO: ['Erro', 'red'],
   ATIVO: ['Ativo', 'green'], PAUSADO: ['Pausado', 'gray'], SEM_ESTOQUE: ['Sem estoque', 'red'], ENCERRADO: ['Encerrado', 'gray'],
   OK: ['OK', 'green'], BAIXO: ['Baixo', 'orange'], RUPTURA: ['Ruptura', 'red'], EXCESSO: ['Excesso', 'purple'],
-  CONTINGENCIA: ['Contingência', 'orange'], CONCLUIDO: ['Concluído', 'green'], SEM_MANIFESTACAO: ['Sem manifestação', 'yellow'], CIENCIA: ['Ciência', 'blue'], CONFIRMADA: ['Confirmada', 'green'], DESCONHECIDA: ['Desconhecida', 'red'], NAO_REALIZADA: ['Não realizada', 'gray'], SIMULADO: ['Simulado', 'purple'], PROCESSANDO: ['Processando', 'blue'],
+  CONTINGENCIA: ['Contingência', 'orange'], CONCLUIDO: ['Concluído', 'green'], SEM_MANIFESTACAO: ['Sem manifestação', 'yellow'], CIENCIA: ['Ciência', 'blue'], CONFIRMADA: ['Confirmada', 'green'], DESCONHECIDA: ['Desconhecida', 'red'], NAO_REALIZADA: ['Não realizada', 'gray'], SIMULADO: ['Simulado', 'purple'], LIDO: ['Lido', 'green'], PROCESSADO: ['Processado', 'green'], PROCESSANDO: ['Processando', 'blue'],
   LANCADA: ['Lançada', 'green'], IGNORADA: ['Ignorada', 'gray'], ABERTO_CAIXA: ['Aberto', 'green'], FECHADO: ['Fechado', 'gray'],
 };
 export function StatusBadge({ status }: { status: string }) {
