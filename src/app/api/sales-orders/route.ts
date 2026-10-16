@@ -10,6 +10,7 @@ export const GET = route('vendas', 'view', async ({ ctx, query }) => {
   if (query.get('channelId')) where.channelId = query.get('channelId');
   if (query.get('origin')) where.origin = query.get('origin');
   if (query.get('sellerId')) where.sellerId = query.get('sellerId');
+  if (query.get('customerId')) where.customerId = query.get('customerId');
   if (query.get('from') || query.get('to')) where.date = { ...(query.get('from') ? { gte: new Date(query.get('from')!) } : {}), ...(query.get('to') ? { lte: new Date(query.get('to') + 'T23:59:59') } : {}) };
   const pageSize = Math.min(Number(query.get('pageSize')) || 50, 500);
   const page = Math.max(Number(query.get('page')) || 1, 1);

@@ -22,7 +22,9 @@ export function safe(s: unknown) {
 
 async function barcode(doc: PDFDocument, bcid: string, text: string, opts: Record<string, unknown> = {}): Promise<PDFImage | null> {
   try {
-    const png = await bwipjs.toBuffer({ bcid, text, scale: 3, height: 10, includetext: false, ...opts } as never);
+    const merged: Record<string, unknown> = { bcid, text, scale: 3, includetext: false, ...(bcid === 'qrcode' || bcid === 'datamatrix' ? {} : { height: 10 }), ...opts };
+    for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k];
+    const png = await bwipjs.toBuffer(merged as never);
     return doc.embedPng(png);
   } catch {
     return null;
@@ -242,8 +244,8 @@ export async function boletoPdf(entry: FinancialEntry, company: Company, bank: B
   const c = { page, font, bold };
   const M = 30, W = 595.28 - 60;
   let y = 790;
-  text(c, 'RECIBO DO PAGADOR', M, y, 9, true);
-  y -= 20;
+  text(c, 'RECIBO DO PAGADOR', M, y + 6, 9, true);
+  y -= 24;
   box(c, M, y, W * 0.5, 22, 'Beneficiário', `${company.name} - CNPJ ${fmtDoc(company.cnpj)}`);
   box(c, M + W * 0.5, y, W * 0.25, 22, 'Vencimento', fmtDate(entry.dueDate), 9, true);
   box(c, M + W * 0.75, y, W * 0.25, 22, 'Valor do documento', money(entry.amount - entry.paidAmount), 9, true);
@@ -254,8 +256,8 @@ export async function boletoPdf(entry: FinancialEntry, company: Company, bank: B
   y -= 50;
   page.drawLine({ start: { x: M, y }, end: { x: M + W, y }, thickness: 0.5, dashArray: [3, 3] });
   y -= 30;
-  text(c, `${bank?.bankName || 'GestãoPro Bank'} | ${bank?.bankCode || '999'}-9 |`, M, y, 12, true);
-  text(c, entry.boletoLine || '', M + 190, y, 10.5, true);
+  text(c, `${(bank?.bankName || 'GestãoPro Bank').replace(' (simulado)', '')} | ${bank?.bankCode || '999'}-9`, M, y, 11, true);
+  text(c, entry.boletoLine || '', M + W - bold.widthOfTextAtSize(safe(entry.boletoLine || ''), 10.5), y, 10.5, true);
   y -= 10;
   const rows: [string, string, number][][] = [
     [['Local de pagamento', 'Pagável em qualquer banco ou via Pix até o vencimento (SIMULADO)', 0.75], ['Vencimento', fmtDate(entry.dueDate), 0.25]],

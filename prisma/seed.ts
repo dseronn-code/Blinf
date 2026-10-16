@@ -81,7 +81,7 @@ async function setupCompany(orgId: string, data: { name: string; tradeName: stri
   await prisma.bankAccount.createMany({
     data: [
       { companyId: company.id, name: 'Caixa da loja', type: 'CAIXA', initialBalance: 500 },
-      { companyId: company.id, name: 'Banco do Brasil', type: 'CORRENTE', bankCode: '001', bankName: 'Banco do Brasil', agency: '1234-5', accountNumber: '98765-4', initialBalance: 25000, isDefault: true },
+      { companyId: company.id, name: 'Banco do Brasil', type: 'CORRENTE', bankCode: '001', bankName: 'Banco do Brasil', agency: '1234-5', accountNumber: '98765-4', initialBalance: 45000, isDefault: true },
       { companyId: company.id, name: 'Conta Digital GestãoPro', type: 'CONTA_DIGITAL', bankCode: '999', bankName: 'GestãoPro Bank (simulado)', agency: '0001', accountNumber: `${randomDigits(6)}-${randomDigits(1)}`, pixKey: data.cnpj, initialBalance: 8000 },
     ],
   });
@@ -289,13 +289,13 @@ async function main() {
   const whLoja = await prisma.warehouse.findFirst({ where: { companyId: moda.id, code: 'LOJA' } });
   for (const p of stockable) {
     const isRaw = p.kind === 'MATERIA_PRIMA';
-    const qty = isRaw ? (p.unit === 'UN' ? 1500 : p.unit === 'L' ? 20 : 300) : randomInt(25, 80);
+    const qty = isRaw ? (p.unit === 'UN' ? 1500 : p.unit === 'L' ? 20 : 300) : randomInt(220, 380);
     await moveStock(prisma, { companyId: moda.id, productId: p.id, warehouseId: whModa!.id, quantity: qty, direction: 'IN', type: 'ENTRADA', origin: 'INVENTARIO', notes: 'Saldo inicial de implantação', unitCost: p.costPrice, lotNumber: p.controlsLot ? `L${randomDigits(4)}` : null, expiresAt: p.controlsLot ? addDays(new Date(), randomInt(20, 400)) : null });
     if (!isRaw && p.categoryId && [cats['Eletrônicos'], cats['Informática']].includes(p.categoryId)) {
-      await moveStock(prisma, { companyId: tech.id, productId: p.id, warehouseId: whTech!.id, quantity: randomInt(15, 50), direction: 'IN', origin: 'INVENTARIO', notes: 'Saldo inicial de implantação', unitCost: p.costPrice });
+      await moveStock(prisma, { companyId: tech.id, productId: p.id, warehouseId: whTech!.id, quantity: randomInt(120, 200), direction: 'IN', origin: 'INVENTARIO', notes: 'Saldo inicial de implantação', unitCost: p.costPrice });
     }
   }
-  for (const p of camiseta.children.slice(0, 4)) await moveStock(prisma, { companyId: moda.id, productId: p.id, warehouseId: whLoja!.id, quantity: 10, direction: 'IN', origin: 'INVENTARIO', notes: 'Estoque da loja física' });
+  for (const p of [...camiseta.children, simples.bone, simples.meia]) await moveStock(prisma, { companyId: moda.id, productId: p.id, warehouseId: whLoja!.id, quantity: 25, direction: 'IN', origin: 'INVENTARIO', notes: 'Estoque da loja física' });
   // Um item propositalmente com estoque baixo (ruptura)
   await moveStock(prisma, { companyId: moda.id, productId: simples.relogio.id, warehouseId: whModa!.id, quantity: (await prisma.stockBalance.findFirst({ where: { productId: simples.relogio.id, warehouseId: whModa!.id } }))!.quantity - 2, direction: 'OUT', type: 'AJUSTE', origin: 'INVENTARIO', notes: 'Ajuste de inventário' });
   await prisma.stockMovement.updateMany({ data: { createdAt: addDays(new Date(), -95) } });
@@ -350,7 +350,7 @@ async function main() {
     const date = addDays(new Date(), -daysAgo);
     date.setHours(randomInt(8, 20), randomInt(0, 59));
     const customer = pick(customers);
-    const items = [...new Map(Array.from({ length: randomInt(1, 3) }, () => pick(sellables)).map((p) => [p.id, p])).values()].map((p) => ({ productId: p.id, quantity: customer.personType === 'PJ' ? randomInt(10, 20) : randomInt(1, 2) }));
+    const items = [...new Map(Array.from({ length: randomInt(1, 3) }, () => pick(sellables)).map((p) => [p.id, p])).values()].map((p) => ({ productId: p.id, quantity: customer.personType === 'PJ' ? randomInt(6, 12) : randomInt(1, 2) }));
     const method = pick(['BOLETO', 'PIX', 'PIX', 'CARTAO_CREDITO', 'BOLETO']);
     const order = await createOrder(actor, {
       customerId: customer.id,
@@ -440,9 +440,9 @@ async function main() {
 
   // ---------------- Despesas recorrentes ----------------
   const fixed: [string, number, string, string][] = [
-    ['Aluguel do galpão', 6500, '2.2.01', 'ADM'], ['Energia elétrica', 890, '2.2.02', 'ADM'], ['Internet fibra + telefonia', 349.9, '2.2.03', 'ADM'],
-    ['Honorários contábeis', 1200, '2.2.04', 'ADM'], ['Assinatura GestãoPro', 299, '2.2.05', 'ADM'], ['Folha de pagamento', 14800, '2.3.01', 'ADM'],
-    ['FGTS e benefícios', 3900, '2.3.02', 'ADM'], ['Anúncios Google/Meta', 2500, '2.4.01', 'ECO'], ['DAS - Simples Nacional', 4200, '2.6.01', 'ADM'], ['Tarifa bancária pacote', 79.9, '2.5.01', 'ADM'],
+    ['Aluguel do galpão', 3800, '2.2.01', 'ADM'], ['Energia elétrica', 690, '2.2.02', 'ADM'], ['Internet fibra + telefonia', 249.9, '2.2.03', 'ADM'],
+    ['Honorários contábeis', 890, '2.2.04', 'ADM'], ['Assinatura GestãoPro', 299, '2.2.05', 'ADM'], ['Folha de pagamento', 7400, '2.3.01', 'ADM'],
+    ['FGTS e benefícios', 1900, '2.3.02', 'ADM'], ['Anúncios Google/Meta', 1500, '2.4.01', 'ECO'], ['DAS - Simples Nacional', 2600, '2.6.01', 'ADM'], ['Tarifa bancária pacote', 79.9, '2.5.01', 'ADM'],
   ];
   for (const company of [moda, tech]) {
     const centers = await prisma.costCenter.findMany({ where: { companyId: company.id } });

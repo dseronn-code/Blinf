@@ -1,0 +1,36 @@
+# GestãoPro — subir tudo com: docker compose up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gestao
+      POSTGRES_PASSWORD: gestao
+      POSTGRES_DB: gestaopro
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gestao -d gestaopro"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gestao:gestao@db:5432/gestaopro?schema=public
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-gestaopro-demo-secret-troque-em-producao}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      # Opcional: assistente de IA com Claude (sem a chave usa o motor local)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # true = webhooks nunca chamam URLs externas (entregas simuladas)
+      WEBHOOKS_SIMULATE_ONLY: ${WEBHOOKS_SIMULATE_ONLY:-true}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

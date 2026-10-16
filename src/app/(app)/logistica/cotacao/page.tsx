@@ -1,0 +1,39 @@
+'use client';
+import { useState } from 'react';
+import { Calculator } from 'lucide-react';
+import { useAction } from '@/lib/api';
+import { PageHeader, Field, DataTable, SimBanner } from '@/components/common/page';
+import { EntityPicker } from '@/components/common/picker';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { money, num } from '@/lib/utils';
+
+export default function FreightQuote() {
+  const [f, setF] = useState<any>({ toZip: '', weight: 1, height: 10, width: 15, length: 20, value: 100 });
+  const [orderId, setOrderId] = useState<string | null>(null);
+  const [res, setRes] = useState<any>(null);
+  const act = useAction();
+  const quote = async () => setRes(await act('POST', '/api/logistics/quote', orderId ? { orderId } : f, false));
+  return (
+    <div>
+      <PageHeader title="Cotação de frete" description="Compare Correios (PAC/SEDEX), transportadoras do Melhor Envio e GestãoPro Envios (tarifas com desconto)" />
+      <SimBanner>preços calculados por fórmula própria considerando peso real × cúbico (L×A×C/6000), distância por região do CEP e seguro (0,5%).</SimBanner>
+      <Card className="mb-3"><CardContent className="grid grid-cols-2 gap-3 md:grid-cols-7">
+        <Field label="Cotar a partir de um pedido" className="col-span-2"><EntityPicker endpoint="/api/sales-orders?status=ABERTO,FATURADO,SEPARADO" value={orderId} label={orderId ? 'Pedido selecionado' : null} onChange={(v) => setOrderId(v)} map={(r: any) => ({ id: r.id, label: `#${r.number} — ${r.customer.name}`, sub: money(r.total) })} placeholder="ou informe o pacote →" /></Field>
+        <Field label="CEP destino"><Input disabled={!!orderId} value={f.toZip} onChange={(e) => setF({ ...f, toZip: e.target.value })} placeholder="00000-000" /></Field>
+        <Field label="Peso (kg)"><Input disabled={!!orderId} type="number" step="0.01" value={f.weight} onChange={(e) => setF({ ...f, weight: e.target.value })} /></Field>
+        <Field label="A x L x C (cm)"><div className="flex gap-1"><Input disabled={!!orderId} value={f.height} onChange={(e) => setF({ ...f, height: e.target.value })} /><Input disabled={!!orderId} value={f.width} onChange={(e) => setF({ ...f, width: e.target.value })} /><Input disabled={!!orderId} value={f.length} onChange={(e) => setF({ ...f, length: e.target.value })} /></div></Field>
+        <Field label="Valor declarado"><Input disabled={!!orderId} type="number" value={f.value} onChange={(e) => setF({ ...f, value: e.target.value })} /></Field>
+        <Field label="&nbsp;"><Button className="w-full" onClick={quote}><Calculator /> Cotar</Button></Field>
+      </CardContent></Card>
+      {res?.package && <p className="mb-2 text-sm text-muted-foreground">Pacote do pedido: {num(res.package.weight, 3)} kg · {res.package.height}x{res.package.width}x{res.package.length} cm</p>}
+      {res && <DataTable rows={res.options.map((o: any, i: number) => ({ ...o, id: String(i) }))} columns={[
+        { key: 'carrier', header: 'Transportadora', cell: (r: any) => <b>{r.carrier}</b> }, { key: 'service', header: 'Serviço' },
+        { key: 'provider', header: 'Via', cell: (r: any) => <Badge tone={r.provider === 'GESTAO_ENVIOS' ? 'green' : r.provider === 'MELHOR_ENVIO' ? 'blue' : 'yellow'}>{r.provider.replace('_', ' ')}</Badge> },
+        { key: 'deadlineDays', header: 'Prazo', align: 'right', cell: (r: any) => `${r.deadlineDays} dia(s) úteis` }, { key: 'price', header: 'Preço', align: 'right', cell: (r: any, ) => <b>{money(r.price)}</b> },
+      ]} />}
+    </div>
+  );
+}

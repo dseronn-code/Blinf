@@ -228,7 +228,8 @@ export const AUTOMATIONS: AutomationDef[] = [
       if (!link?.entryId) return 'Link sem conta vinculada';
       const entry = await prisma.financialEntry.findUnique({ where: { id: link.entryId } });
       if (!entry || entry.status === 'PAGO') return 'Conta já quitada';
-      await payEntry(a.companyId, a.orgId, link.entryId, { method: link.paidMethod || 'PIX', transactionSource: link.paidMethod === 'BOLETO' ? 'BOLETO' : 'PIX' });
+      const digital = await prisma.bankAccount.findFirst({ where: { companyId: a.companyId, type: 'CONTA_DIGITAL', active: true } });
+      await payEntry(a.companyId, a.orgId, link.entryId, { bankAccountId: digital?.id, method: link.paidMethod || 'PIX', transactionSource: link.paidMethod === 'BOLETO' ? 'BOLETO' : 'PIX' });
       return `Conta "${entry.description}" quitada`;
     },
   },

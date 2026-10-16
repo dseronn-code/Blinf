@@ -1,0 +1,4 @@
+// Rótulos e cores de domínio compartilhados pela interface
+export const KIND_LABEL: Record<string, [string, string]> = { SIMPLES: ['Simples', 'gray'], VARIACAO_PAI: ['Com variações', 'purple'], VARIACAO: ['Variação', 'purple'], KIT: ['Kit', 'blue'], FABRICADO: ['Fabricado', 'teal'], MATERIA_PRIMA: ['Matéria-prima', 'orange'] };
+export const PAYMENT_METHODS: Record<string, string> = { BOLETO: 'Boleto', PIX: 'Pix', CARTAO_CREDITO: 'Cartão de crédito', CARTAO_DEBITO: 'Cartão de débito', DINHEIRO: 'Dinheiro', MARKETPLACE: 'Marketplace', LINK: 'Link de pagamento', TRANSFERENCIA: 'Transferência' };
+export const ORIGIN_LABEL: Record<string, string> = { MANUAL: 'Manual', PDV: 'PDV', LOJA: 'Loja virtual', INTEGRACAO: 'Marketplace', IMPORTACAO: 'Importação', PROPOSTA: 'Proposta', API: 'API', OS: 'Ordem de serviço' };

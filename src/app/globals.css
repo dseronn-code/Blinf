@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 20% 97%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 142 72% 33%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 220 14% 95%;
+    --muted-foreground: 220 9% 44%;
+    --accent: 142 50% 94%;
+    --accent-foreground: 142 72% 22%;
+    --destructive: 0 72% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 89%;
+    --input: 220 13% 86%;
+    --ring: 142 72% 33%;
+    --radius: 0.5rem;
+    --sidebar: 222 40% 12%;
+    --sidebar-foreground: 220 20% 85%;
+  }
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground antialiased; font-feature-settings: 'tnum' on; }
+}
+
+@layer components {
+  .table-dense th { @apply h-9 px-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground bg-muted/60 whitespace-nowrap; }
+  .table-dense td { @apply px-3 py-2 text-sm align-middle; }
+  .table-dense tbody tr { @apply border-t hover:bg-accent/40; }
+  .num { @apply text-right tabular-nums whitespace-nowrap; }
+  .md p { @apply mb-2; }
+  .md ul, .md ol { @apply mb-2 ml-5 list-disc; }
+  .md ol { @apply list-decimal; }
+  .md strong { @apply font-semibold; }
+}

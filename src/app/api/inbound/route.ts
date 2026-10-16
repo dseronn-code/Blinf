@@ -4,7 +4,7 @@ import { fail } from '@/server/errors';
 import { importNfeXml } from '@/server/services/purchases';
 
 export const GET = route('compras', 'view', async ({ ctx }) => {
-  const rows = await prisma.inboundInvoice.findMany({ where: { companyId: ctx.companyId }, orderBy: { createdAt: 'desc' }, select: { id: true, accessKey: true, number: true, series: true, issueDate: true, supplierName: true, supplierCnpj: true, total: true, status: true, items: true, purchaseOrderId: true, createdAt: true } });
+  const rows = await prisma.inboundInvoice.findMany({ where: { companyId: ctx.companyId }, orderBy: { createdAt: 'desc' }, select: { id: true, accessKey: true, number: true, series: true, issueDate: true, supplierName: true, supplierCnpj: true, total: true, productsTotal: true, duplicates: true, status: true, items: true, purchaseOrderId: true, createdAt: true } });
   return { rows };
 });
 
