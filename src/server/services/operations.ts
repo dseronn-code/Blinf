@@ -142,7 +142,11 @@ export async function lookupPdvCode(actor: Actor, raw: string) {
     const p = await prisma.product.findFirst({ where: { organizationId: actor.orgId, scaleCode: scale } });
     if (p && p.price > 0) {
       const av = await getAvailability(prisma, actor, [p.id]);
-      return { product: { ...p, stock: av.get(p.id) }, quantity: round3(value / p.price), scale: true, value };
+      // Quantidade em 3 casas e preço unitário ajustado para o total bater exatamente com o valor da etiqueta
+      const quantity = round3(value / p.price);
+      let unit = round2(value / quantity);
+      for (const d of [0, 0.01, -0.01, 0.02, -0.02, 0.03, -0.03]) if (round2(quantity * (unit + d)) === value) { unit = round2(unit + d); break; }
+      return { product: { ...p, price: unit, listPrice: p.price, stock: av.get(p.id) }, quantity, scale: true, value };
     }
   }
   const p = await prisma.product.findFirst({ where: { organizationId: actor.orgId, kind: { not: 'VARIACAO_PAI' }, OR: [{ gtin: code }, { sku: { equals: code, mode: 'insensitive' } }] } });

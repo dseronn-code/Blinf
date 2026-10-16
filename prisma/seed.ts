@@ -525,6 +525,21 @@ async function main() {
   await prisma.cashMovement.create({ data: { sessionId: session.id, type: 'SANGRIA', amount: -100, notes: 'Sangria para cofre', createdAt: addDays(new Date(), -1) } });
   await prisma.cashSession.update({ where: { id: session.id }, data: { status: 'FECHADO', closedAt: addDays(new Date(), -1), expectedAmount: round2(200 + cashSales - 100), closingAmount: round2(200 + cashSales - 100) } });
   await prisma.posTerminal.create({ data: { companyId: moda.id, name: 'Maquininha Loja 01', serial: 'STN' + randomDigits(8), acquirer: 'Stone', bankAccountId: (await prisma.bankAccount.findFirst({ where: { companyId: moda.id, type: 'CONTA_DIGITAL' } }))!.id } });
+  // Vendas na maquininha (agenda de recebíveis: débito D+1, crédito D+30 por parcela)
+  const stone = await prisma.posTerminal.findFirstOrThrow({ where: { companyId: moda.id } });
+  for (let i = 0; i < 14; i++) {
+    const method = pick(['CREDITO', 'CREDITO', 'DEBITO']);
+    const amount = round2(randomInt(80, 900) + Math.random());
+    const installments = method === 'CREDITO' ? pick([1, 1, 2, 3, 6]) : 1;
+    const fee = round2((amount * (method === 'CREDITO' ? stone.creditFee : stone.debitFee)) / 100);
+    const when = addDays(new Date(), -randomInt(0, 75));
+    await prisma.posTransaction.create({ data: { companyId: moda.id, terminalId: stone.id, method, installments, amount, fee, netAmount: round2(amount - fee), nsu: randomDigits(9), authCode: randomDigits(6), brand: pick(['Visa', 'Mastercard', 'Elo']), createdAt: when } });
+    const clearing = await prisma.bankAccount.findFirstOrThrow({ where: { companyId: moda.id, type: 'CARTAO' } });
+    await prisma.bankTransaction.createMany({ data: [
+      { companyId: moda.id, bankAccountId: clearing.id, date: when, description: `Venda maquininha ${method} ${installments}x`, amount, source: 'POS', reconciled: true },
+      { companyId: moda.id, bankAccountId: clearing.id, date: when, description: `Taxa ${stone.acquirer}`, amount: -fee, source: 'TARIFA', reconciled: true },
+    ] });
+  }
   await prisma.posTerminal.create({ data: { companyId: tech.id, name: 'POS Balcão', serial: 'PAG' + randomDigits(8), acquirer: 'PagBank', debitFee: 1.99, creditFee: 4.39 } });
   log('PDV: sessão de caixa com vendas e NFC-e');
 
