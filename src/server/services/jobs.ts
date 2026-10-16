@@ -59,10 +59,14 @@ async function loadHandlers() {
   loaded = true;
   await import('./webhooks');
   await import('./messaging');
+  await import('../integrations/inbound');
+  await import('../integrations/scheduler');
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
 export function startWorker(intervalMs = 3000) {
   if (timer) return;
   timer = setInterval(() => processJobs().catch((e) => console.error('[jobs]', e)), intervalMs);
+  // Sincronizações periódicas das integrações reais (pedidos, rastreio, status de cobranças...)
+  setInterval(() => import('../integrations/scheduler').then((m) => m.pollAll()).catch((e) => console.error('[poll]', e)), 60_000);
 }

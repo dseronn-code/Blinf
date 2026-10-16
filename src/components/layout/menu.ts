@@ -99,6 +99,7 @@ export const MENU: MenuGroup[] = [
   {
     label: 'Integrações', icon: Plug, module: 'integracoes', items: [
       { label: 'Central de integrações', href: '/integracoes' },
+      { label: 'Contas e credenciais', href: '/integracoes/contas' },
       { label: 'Logs de sincronização', href: '/integracoes/logs' },
       { label: 'API e webhooks', href: '/integracoes/api' },
     ],

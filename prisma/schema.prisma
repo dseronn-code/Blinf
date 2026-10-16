@@ -73,6 +73,10 @@ model Company {
   certPassword   String?
   certSerial     String?
   sefazMode      String    @default("SIMULADO") // SIMULADO | ASSINADO (XML assinado com o certificado real)
+  /// Quem autoriza os documentos: SIMULADO | SEFAZ (webservices oficiais com o certificado A1) | FOCUS_NFE (API fiscal)
+  fiscalProvider String    @default("SIMULADO")
+  /// Inscrição estadual de substituto tributário por UF (para ST/DIFAL sem GNRE): { "RJ": "123" }
+  ieSt           Json      @default("{}")
   createdAt      DateTime  @default(now())
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -812,6 +816,13 @@ model OperationNature {
 model Invoice {
   id               String    @id @default(cuid())
   companyId        String
+  /// 1=Produção 2=Homologação no momento da emissão
+  environment      Int       @default(2)
+  /// Número do recibo (lote assíncrono) / referência no provedor fiscal
+  receipt          String?
+  providerRef      String?
+  /// XML de distribuição (nfeProc com protocolo) devolvido pela SEFAZ
+  procXml          String?
   /// NFE (55) | NFCE (65) | NFSE
   model            String
   number           Int
@@ -998,6 +1009,10 @@ model FinancialEntry {
   boletoLine     String? // Linha digitável
   boletoBarcode  String?
   pixPayload     String?
+  /// Cobrança registrada em provedor real (ASAAS | MERCADO_PAGO ...)
+  provider       String?
+  providerRef    String?
+  paymentUrl     String?
   notes          String?
   createdAt      DateTime  @default(now())
 
@@ -1202,6 +1217,9 @@ model Shipment {
   length       Float      @default(20)
   volumes      Int        @default(1)
   trackingCode String?
+  /// Pedido/etiqueta no provedor real (ex.: id do Melhor Envio) e URL do PDF da etiqueta
+  providerRef  String?
+  labelUrl     String?
   /// PENDENTE | ETIQUETA_GERADA | POSTADO | EM_TRANSITO | SAIU_PARA_ENTREGA | ENTREGUE | CANCELADO
   status       String     @default("PENDENTE")
   labelAt      DateTime?
@@ -1478,19 +1496,23 @@ model Budget {
 
 /// Caixa de saída de mensagens (e-mail via SMTP quando configurado; WhatsApp simulado)
 model OutboxMessage {
-  id        String    @id @default(cuid())
-  companyId String
+  id          String    @id @default(cuid())
+  companyId   String
   /// EMAIL | WHATSAPP
-  channel   String    @default("EMAIL")
-  to        String
-  subject   String
-  body      String
+  channel     String    @default("EMAIL")
+  to          String
+  subject     String
+  /// Versão HTML (modelo de e-mail); `body` guarda o texto puro
+  html        String?
+  /// id da mensagem no provedor (SMTP message-id / WhatsApp wamid)
+  providerRef String?
+  body        String
   /// PENDENTE | ENVIADO | SIMULADO | ERRO
-  status    String    @default("PENDENTE")
-  error     String?
-  related   String?
-  createdAt DateTime  @default(now())
-  sentAt    DateTime?
+  status      String    @default("PENDENTE")
+  error       String?
+  related     String?
+  createdAt   DateTime  @default(now())
+  sentAt      DateTime?
 
   @@index([companyId, createdAt])
 }
@@ -1510,4 +1532,187 @@ model Job {
   doneAt      DateTime?
 
   @@index([status, runAt])
+}
+
+/// Conta de integração por empresa (como no Bling: cada empresa conecta as próprias contas).
+/// Segredos ficam criptografados (AES-256-GCM) em `secrets`.
+model IntegrationAccount {
+  id                String    @id @default(cuid())
+  companyId         String
+  /// Ex.: ASAAS, MERCADO_PAGO, MERCADO_LIVRE, SHOPEE, NUVEMSHOP, SHOPIFY, WOOCOMMERCE, MELHOR_ENVIO, CORREIOS, WHATSAPP, SMTP, FOCUS_NFE
+  provider          String
+  /// SANDBOX | PRODUCAO
+  environment       String    @default("SANDBOX")
+  /// DESCONECTADO | CONECTADO | ERRO
+  status            String    @default("DESCONECTADO")
+  secrets           String?
+  settings          Json      @default("{}")
+  tokenExpiresAt    DateTime?
+  externalAccountId String?
+  accountName       String?
+  lastError         String?
+  lastCheckAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([companyId, provider])
+}
+
+/// Estado do fluxo OAuth (proteção CSRF)
+model OAuthState {
+  state     String   @id
+  companyId String
+  provider  String
+  userId    String?
+  verifier  String?
+  createdAt DateTime @default(now())
+}
+
+/// Chamadas HTTP feitas às APIs externas (auditoria/diagnóstico, corpo truncado e sem segredos)
+model IntegrationCall {
+  id         String   @id @default(cuid())
+  companyId  String?
+  provider   String
+  method     String
+  url        String
+  status     Int?
+  durationMs Int?
+  request    String?
+  response   String?
+  error      String?
+  createdAt  DateTime @default(now())
+
+  @@index([companyId, createdAt])
+}
+
+/// Notificações recebidas dos provedores (webhooks de entrada)
+model InboundEvent {
+  id          String    @id @default(cuid())
+  provider    String
+  companyId   String?
+  topic       String?
+  externalId  String?
+  payload     Json
+  /// RECEBIDO | PROCESSADO | IGNORADO | ERRO
+  status      String    @default("RECEBIDO")
+  error       String?
+  createdAt   DateTime  @default(now())
+  processedAt DateTime?
+
+  @@index([provider, createdAt])
+}
+
+/// MDF-e (Manifesto Eletrônico de Documentos Fiscais) — modelo 58
+model Mdfe {
+  id             String    @id @default(cuid())
+  companyId      String
+  number         Int
+  series         Int       @default(1)
+  /// RASCUNHO | AUTORIZADO | REJEITADO | ENCERRADO | CANCELADO
+  status         String    @default("RASCUNHO")
+  environment    Int       @default(2)
+  accessKey      String?
+  protocol       String?
+  xml            String?
+  rejection      String?
+  ufStart        String
+  ufEnd          String
+  /// UFs de percurso
+  route          String[]
+  loadCity       String
+  loadCityCode   String
+  unloadCity     String
+  unloadCityCode String
+  vehiclePlate   String
+  vehicleTara    Int       @default(0)
+  vehicleUf      String
+  rntrc          String?
+  driverName     String
+  driverCpf      String
+  invoiceKeys    String[]
+  totalValue     Float     @default(0)
+  totalWeight    Float     @default(0)
+  issueDate      DateTime  @default(now())
+  closedAt       DateTime?
+  events         Json      @default("[]")
+  createdAt      DateTime  @default(now())
+
+  @@unique([companyId, series, number])
+}
+
+/// GNRE — Guia Nacional de Recolhimento de Tributos Estaduais (ICMS-ST / DIFAL / FCP de outra UF)
+model Gnre {
+  id          String    @id @default(cuid())
+  companyId   String
+  invoiceId   String?
+  uf          String
+  /// 100099 ICMS-ST por operação | 100102 DIFAL consumidor final | 100129 FCP
+  revenueCode String
+  amount      Float
+  dueDate     DateTime
+  reference   String?
+  barcode     String?
+  line        String?
+  /// PENDENTE | GERADA | PAGA | CANCELADA
+  status      String    @default("PENDENTE")
+  xml         String?
+  createdAt   DateTime  @default(now())
+  paidAt      DateTime?
+}
+
+/// Contratos de cobrança recorrente (mensalidades, assinaturas, locação)
+model Contract {
+  id              String            @id @default(cuid())
+  companyId       String
+  number          Int
+  customerId      String
+  description     String
+  /// [{ serviceId?, productId?, description, quantity, unitPrice }]
+  items           Json
+  amount          Float
+  /// MENSAL | BIMESTRAL | TRIMESTRAL | SEMESTRAL | ANUAL
+  interval        String            @default("MENSAL")
+  billingDay      Int               @default(10)
+  startDate       DateTime
+  endDate         DateTime?
+  nextBillingDate DateTime
+  /// ATIVO | SUSPENSO | ENCERRADO
+  status          String            @default("ATIVO")
+  paymentMethod   String            @default("BOLETO")
+  /// NENHUMA | NFSE | NFE
+  invoiceModel    String            @default("NFSE")
+  /// Reajuste anual (%) aplicado no aniversário
+  adjustPercent   Float             @default(0)
+  sellerId        String?
+  notes           String?
+  createdAt       DateTime          @default(now())
+  billings        ContractBilling[]
+
+  @@unique([companyId, number])
+}
+
+model ContractBilling {
+  id         String   @id @default(cuid())
+  contractId String
+  period     String // AAAA-MM
+  amount     Float
+  entryId    String?
+  invoiceId  String?
+  createdAt  DateTime @default(now())
+  contract   Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, period])
+}
+
+/// Modelos de e-mail editáveis por empresa (HTML com variáveis {{cliente}}, {{pedido}}...)
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  companyId String
+  key       String
+  subject   String
+  html      String
+  active    Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, key])
 }
