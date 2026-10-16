@@ -22,7 +22,8 @@ export const POST = route('financeiro', 'edit', async ({ ctx, body }) => {
   const fee = round2((amount * rate) / 100);
   const tx = await prisma.posTransaction.create({ data: { companyId: ctx.companyId, terminalId: t!.id, method, installments: Number(body.installments) || 1, amount, fee, netAmount: round2(amount - fee), nsu: randomDigits(9), authCode: randomDigits(6), brand: method === 'PIX' ? null : pick(['Visa', 'Mastercard', 'Elo', 'Amex']), status: approved ? 'APROVADA' : 'NEGADA' } });
   if (approved) {
-    const bank = t!.bankAccountId ? await prisma.bankAccount.findUnique({ where: { id: t!.bankAccountId } }) : await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL');
+    // Cartão: entra na conta de recebíveis (liquidação conforme agenda); Pix cai direto na conta digital
+    const bank = method === 'PIX' ? await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL') : await defaultBankAccount(prisma, ctx.companyId, 'CARTAO');
     if (bank) {
       await prisma.bankTransaction.create({ data: { companyId: ctx.companyId, bankAccountId: bank.id, date: new Date(), description: `Venda ${t!.acquirer} ${method} NSU ${tx.nsu}`, amount, source: 'POS', reconciled: true } });
       await prisma.bankTransaction.create({ data: { companyId: ctx.companyId, bankAccountId: bank.id, date: new Date(), description: `Taxa ${t!.acquirer} NSU ${tx.nsu}`, amount: -fee, source: 'TARIFA', reconciled: true } });

@@ -133,37 +133,59 @@ export async function abcCurve(ctx: Scope, days = 90, by: 'value' | 'quantity' =
  * Receita bruta (vendas) − deduções (impostos das notas) − CMV (custo dos itens)
  * − despesas por grupo do plano de contas (lançamentos a pagar por competência).
  */
-export async function dre(ctx: Scope, from: Date, to: Date) {
+export async function dre(ctx: Scope, from: Date, to: Date, regime: 'COMPETENCIA' | 'CAIXA' = 'COMPETENCIA') {
   const companyId = { in: cids(ctx) };
-  const orders = await prisma.salesOrder.aggregate({ where: { companyId, status: SOLD_STATUS, date: { gte: from, lte: to } }, _sum: { total: true, totalCost: true, freight: true, discount: true } });
-  const os = await prisma.serviceOrder.aggregate({ where: { companyId, status: 'FATURADA', finishedAt: { gte: from, lte: to } }, _sum: { total: true } });
-  const invoices = await prisma.invoice.aggregate({ where: { companyId, status: 'AUTORIZADA', issueDate: { gte: from, lte: to } }, _sum: { icmsValue: true, pisValue: true, cofinsValue: true, issValue: true, ipiValue: true } });
-  const payables = await prisma.financialEntry.findMany({ where: { companyId, type: 'PAGAR', status: { not: 'CANCELADO' }, competenceDate: { gte: from, lte: to } }, select: { amount: true, chartAccountId: true, origin: true } });
-  const receivablesOther = await prisma.financialEntry.findMany({ where: { companyId, type: 'RECEBER', status: { not: 'CANCELADO' }, origin: 'MANUAL', competenceDate: { gte: from, lte: to } }, select: { amount: true, chartAccountId: true } });
   const charts = await prisma.chartAccount.findMany({ where: { companyId } });
   const group = (id: string | null) => charts.find((c) => c.id === id)?.dreGroup || 'OUTRAS';
-  const sumGroup = (g: string) => round2(payables.filter((p) => group(p.chartAccountId) === g && p.origin !== 'COMPRA' && p.origin !== 'NFE_ENTRADA').reduce((a, p) => a + p.amount, 0));
-  const grossRevenue = round2((orders._sum.total || 0) + (os._sum.total || 0));
-  const taxes = round2((invoices._sum.icmsValue || 0) + (invoices._sum.pisValue || 0) + (invoices._sum.cofinsValue || 0) + (invoices._sum.issValue || 0) + (invoices._sum.ipiValue || 0));
-  const simplesTax = sumGroup('DEDUCOES');
-  const deductions = round2(taxes + simplesTax);
+  let grossRevenue = 0, taxes = 0, simplesTax = 0, returns = 0, cmv = 0, finRev = 0, otherRev = 0;
+  let sumGroup: (g: string) => number;
+  if (regime === 'CAIXA') {
+    // Regime de caixa: o que efetivamente entrou/saiu (baixas) no período, pelo plano de contas
+    const paid = await prisma.financialEntry.findMany({ where: { companyId, paidAmount: { gt: 0 }, status: { not: 'CANCELADO' }, paymentDate: { gte: from, lte: to } }, select: { type: true, paidAmount: true, chartAccountId: true, origin: true } });
+    const by = (type: string, g: string) => round2(paid.filter((p) => p.type === type && group(p.chartAccountId) === g).reduce((a, p) => a + p.paidAmount, 0));
+    grossRevenue = round2(by('RECEBER', 'RECEITA_BRUTA') + paid.filter((p) => p.type === 'RECEBER' && !p.chartAccountId).reduce((a, p) => a + p.paidAmount, 0));
+    finRev = by('RECEBER', 'RECEITA_FINANCEIRA');
+    otherRev = by('RECEBER', 'OUTRAS');
+    sumGroup = (g: string) => by('PAGAR', g);
+    simplesTax = round2(paid.filter((p) => p.type === 'PAGAR' && group(p.chartAccountId) === 'DEDUCOES' && p.origin !== 'DEVOLUCAO').reduce((a, p) => a + p.paidAmount, 0));
+    returns = round2(paid.filter((p) => p.type === 'PAGAR' && p.origin === 'DEVOLUCAO').reduce((a, p) => a + p.paidAmount, 0));
+    cmv = sumGroup('CMV');
+  } else {
+    const orders = await prisma.salesOrder.aggregate({ where: { companyId, status: SOLD_STATUS, date: { gte: from, lte: to } }, _sum: { total: true, totalCost: true } });
+    const os = await prisma.serviceOrder.aggregate({ where: { companyId, status: 'FATURADA', finishedAt: { gte: from, lte: to } }, _sum: { total: true } });
+    const invoices = await prisma.invoice.aggregate({ where: { companyId, status: 'AUTORIZADA', direction: 'SAIDA', issueDate: { gte: from, lte: to } }, _sum: { icmsValue: true, pisValue: true, cofinsValue: true, issValue: true, ipiValue: true } });
+    const payables = await prisma.financialEntry.findMany({ where: { companyId, type: 'PAGAR', status: { not: 'CANCELADO' }, competenceDate: { gte: from, lte: to } }, select: { amount: true, chartAccountId: true, origin: true } });
+    const receivablesOther = await prisma.financialEntry.findMany({ where: { companyId, type: 'RECEBER', status: { not: 'CANCELADO' }, origin: 'MANUAL', competenceDate: { gte: from, lte: to } }, select: { amount: true, chartAccountId: true } });
+    const rets = await prisma.salesReturn.findMany({ where: { companyId, status: 'CONCLUIDA', createdAt: { gte: from, lte: to } } });
+    sumGroup = (g: string) => round2(payables.filter((p) => group(p.chartAccountId) === g && !['COMPRA', 'NFE_ENTRADA', 'DEVOLUCAO'].includes(p.origin)).reduce((a, p) => a + p.amount, 0));
+    grossRevenue = round2((orders._sum.total || 0) + (os._sum.total || 0));
+    taxes = round2((invoices._sum.icmsValue || 0) + (invoices._sum.pisValue || 0) + (invoices._sum.cofinsValue || 0) + (invoices._sum.issValue || 0) + (invoices._sum.ipiValue || 0));
+    simplesTax = sumGroup('DEDUCOES');
+    returns = round2(rets.reduce((a, r) => a + r.total, 0));
+    // CMV das devoluções que voltaram ao estoque é estornado
+    const retCost = rets.reduce((a, r) => a + (r.items as { quantity: number; unitPrice: number }[]).reduce((x, i) => x + i.quantity * i.unitPrice, 0), 0);
+    const marginRatio = (orders._sum.total || 0) ? (orders._sum.totalCost || 0) / (orders._sum.total || 1) : 0;
+    cmv = round2((orders._sum.totalCost || 0) - retCost * marginRatio);
+    finRev = round2(receivablesOther.filter((r) => group(r.chartAccountId) === 'RECEITA_FINANCEIRA').reduce((a, r) => a + r.amount, 0));
+    otherRev = round2(receivablesOther.filter((r) => group(r.chartAccountId) === 'OUTRAS').reduce((a, r) => a + r.amount, 0));
+  }
+  const deductions = round2(taxes + simplesTax + returns);
   const netRevenue = round2(grossRevenue - deductions);
-  const cmv = round2(orders._sum.totalCost || 0);
   const grossProfit = round2(netRevenue - cmv);
   const opex = { operacionais: sumGroup('DESPESA_OPERACIONAL'), administrativas: sumGroup('DESPESA_ADMINISTRATIVA'), pessoal: sumGroup('DESPESA_PESSOAL') };
   const totalOpex = round2(opex.operacionais + opex.administrativas + opex.pessoal);
   const ebitda = round2(grossProfit - totalOpex);
   const finExp = sumGroup('DESPESA_FINANCEIRA');
-  const finRev = round2(receivablesOther.filter((r) => group(r.chartAccountId) === 'RECEITA_FINANCEIRA').reduce((a, r) => a + r.amount, 0));
-  const other = round2(receivablesOther.filter((r) => group(r.chartAccountId) === 'OUTRAS').reduce((a, r) => a + r.amount, 0) - sumGroup('OUTRAS'));
+  const other = round2(otherRev - sumGroup('OUTRAS'));
   const netProfit = round2(ebitda - finExp + finRev + other);
   const pct = (v: number) => (grossRevenue ? round2((v / grossRevenue) * 100) : 0);
   const lines = [
     { label: 'Receita operacional bruta', value: grossRevenue, level: 0, bold: true },
-    { label: '(-) Impostos destacados em notas (ICMS, IPI, PIS, COFINS, ISS)', value: -taxes, level: 1 },
+    ...(regime === 'COMPETENCIA' ? [{ label: '(-) Impostos destacados em notas (ICMS, IPI, PIS, COFINS, ISS)', value: -taxes, level: 1 }] : []),
     { label: '(-) Impostos sobre vendas (DAS / guias)', value: -simplesTax, level: 1 },
+    { label: '(-) Devoluções de vendas', value: -returns, level: 1 },
     { label: '(=) Receita operacional líquida', value: netRevenue, level: 0, bold: true },
-    { label: '(-) Custo das mercadorias vendidas (CMV)', value: -cmv, level: 1 },
+    { label: regime === 'CAIXA' ? '(-) Compras pagas (mercadorias / matéria-prima)' : '(-) Custo das mercadorias vendidas (CMV)', value: -cmv, level: 1 },
     { label: '(=) Lucro bruto', value: grossProfit, level: 0, bold: true },
     { label: '(-) Despesas operacionais (marketplaces, fretes, marketing)', value: -opex.operacionais, level: 1 },
     { label: '(-) Despesas administrativas', value: -opex.administrativas, level: 1 },
@@ -174,7 +196,7 @@ export async function dre(ctx: Scope, from: Date, to: Date) {
     { label: '(+/-) Outras receitas e despesas', value: other, level: 1 },
     { label: '(=) Lucro líquido do período', value: netProfit, level: 0, bold: true },
   ].map((l) => ({ ...l, percent: pct(l.value) }));
-  return { from, to, lines, netProfit, grossRevenue, netMargin: pct(netProfit) };
+  return { from, to, regime, lines, netProfit, grossRevenue, netMargin: pct(netProfit) };
 }
 
 /** Fluxo de caixa: realizado (movimentos bancários) e previsto (contas em aberto) */

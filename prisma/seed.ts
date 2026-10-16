@@ -55,6 +55,7 @@ const CHART = [
   ['2.5.01', 'Tarifas bancárias', 'DESPESA', 'DESPESA_FINANCEIRA'],
   ['2.5.02', 'Juros e multas pagos', 'DESPESA', 'DESPESA_FINANCEIRA'],
   ['2.6.01', 'Impostos sobre vendas (DAS/ICMS/PIS/COFINS)', 'DESPESA', 'DEDUCOES'],
+  ['2.6.02', 'Devoluções de vendas', 'DESPESA', 'DEDUCOES'],
 ];
 
 async function setupCompany(orgId: string, data: { name: string; tradeName: string; cnpj: string; ie: string; im: string; taxRegime: string; crt: number; uf: string; city: string; cityCode: string; zip: string; street: string; number: string; district: string; phone: string; email: string; color: string }) {
@@ -81,6 +82,7 @@ async function setupCompany(orgId: string, data: { name: string; tradeName: stri
   await prisma.bankAccount.createMany({
     data: [
       { companyId: company.id, name: 'Caixa da loja', type: 'CAIXA', initialBalance: 500 },
+      { companyId: company.id, name: 'Recebíveis de cartão', type: 'CARTAO', bankName: 'Adquirentes' },
       { companyId: company.id, name: 'Banco do Brasil', type: 'CORRENTE', bankCode: '001', bankName: 'Banco do Brasil', agency: '1234-5', accountNumber: '98765-4', initialBalance: 45000, isDefault: true },
       { companyId: company.id, name: 'Conta Digital GestãoPro', type: 'CONTA_DIGITAL', bankCode: '999', bankName: 'GestãoPro Bank (simulado)', agency: '0001', accountNumber: `${randomDigits(6)}-${randomDigits(1)}`, pixKey: data.cnpj, initialBalance: 8000 },
     ],
@@ -93,7 +95,8 @@ async function setupCompany(orgId: string, data: { name: string; tradeName: stri
       { companyId: company.id, name: 'Venda de mercadoria', kind: 'VENDA', cfopIntra: '5102', cfopInter: '6102', isDefault: true, icmsRateIntra: data.uf === 'SP' ? 18 : 22, pisRate: normal ? 0.65 : 0, cofinsRate: normal ? 3 : 0 },
       { companyId: company.id, name: 'Venda de produção do estabelecimento', kind: 'VENDA', cfopIntra: '5101', cfopInter: '6101', icmsRateIntra: data.uf === 'SP' ? 18 : 22 },
       { companyId: company.id, name: 'Venda ao consumidor (NFC-e)', kind: 'NFCE', cfopIntra: '5102', cfopInter: '6102', isDefault: true },
-      { companyId: company.id, name: 'Devolução de venda', kind: 'DEVOLUCAO', direction: 'ENTRADA', cfopIntra: '1202', cfopInter: '2202', finalidade: 4 },
+      { companyId: company.id, name: 'Devolução de venda', kind: 'DEVOLUCAO', direction: 'ENTRADA', cfopIntra: '1202', cfopInter: '2202', finalidade: 4, isDefault: true },
+      { companyId: company.id, name: 'Transferência entre filiais', kind: 'TRANSFERENCIA', cfopIntra: '5152', cfopInter: '6152', generatesFinancial: false, isDefault: true },
       { companyId: company.id, name: 'Remessa para conserto', kind: 'REMESSA', cfopIntra: '5915', cfopInter: '6915', icmsCst: '41', csosn: '400', generatesFinancial: false, movesStock: true },
       { companyId: company.id, name: 'Prestação de serviços', kind: 'SERVICO', cfopIntra: '', cfopInter: '', issRate: 5, isDefault: true },
       { companyId: company.id, name: 'Compra para comercialização', kind: 'COMPRA', direction: 'ENTRADA', cfopIntra: '1102', cfopInter: '2102' },

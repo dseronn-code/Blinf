@@ -44,7 +44,8 @@ export const POST = route('pdv', 'edit', async ({ ctx, body }) => {
       const rate = p.method === 'CARTAO_CREDITO' ? terminal.creditFee : p.method === 'CARTAO_DEBITO' ? terminal.debitFee : terminal.pixFee;
       const fee = round2((value * rate) / 100);
       await prisma.posTransaction.create({ data: { companyId: ctx.companyId, terminalId: terminal.id, method: p.method === 'PIX' ? 'PIX' : p.method === 'CARTAO_CREDITO' ? 'CREDITO' : 'DEBITO', installments: p.installments || 1, amount: value, fee, netAmount: round2(value - fee), nsu: randomDigits(9), authCode: randomDigits(6), brand: p.method === 'PIX' ? null : ['Visa', 'Mastercard', 'Elo'][Math.floor(Math.random() * 3)], orderId: order.id } });
-      const bank = terminal.bankAccountId ? await prisma.bankAccount.findUnique({ where: { id: terminal.bankAccountId } }) : await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL');
+      // taxa lançada na conta de recebíveis de cartão (liquidação líquida em D+1/D+30)
+      const bank = p.method === 'PIX' ? await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL') : await defaultBankAccount(prisma, ctx.companyId, 'CARTAO');
       if (bank && fee > 0) await prisma.bankTransaction.create({ data: { companyId: ctx.companyId, bankAccountId: bank.id, date: new Date(), description: `Taxa ${terminal.acquirer} - pedido ${order.number}`, amount: -fee, source: 'TARIFA', reconciled: true } });
     }
   }

@@ -1,7 +1,13 @@
 import { prisma } from '@/lib/db';
 import { route } from '@/server/http';
 
-export const GET = route(null, 'view', async ({ ctx }) => prisma.company.findUnique({ where: { id: ctx.companyId }, include: { organization: { select: { name: true, stockMode: true } } } }));
+const omit = { certPfx: false, certPassword: false } as const;
+
+export const GET = route(null, 'view', async ({ ctx }) => {
+  const c = await prisma.company.findUnique({ where: { id: ctx.companyId }, include: { organization: { select: { name: true, stockMode: true } } }, omit });
+  const hasPfx = !!(await prisma.company.count({ where: { id: ctx.companyId, certPfx: { not: null } } }));
+  return { ...c, hasPfx };
+});
 
 /** Preferências da organização (modo de estoque unificado/separado) */
 export const PUT = route('configuracoes', 'edit', async ({ ctx, body }) => {

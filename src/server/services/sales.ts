@@ -300,7 +300,8 @@ export async function postOrderFinancial(actor: Actor, orderId: string) {
   });
   // Pagamento já capturado (PDV, loja com Pix/cartão, marketplace): baixa automática
   if (o.paidOnCreate) {
-    const bank = await defaultBankAccount(prisma, actor.companyId, o.paymentMethod === 'DINHEIRO' ? 'CAIXA' : 'CONTA_DIGITAL');
+    // Cartão: o valor entra na conta de recebíveis da adquirente e é liquidado em D+1/D+30 (agenda de recebíveis)
+    const bank = await defaultBankAccount(prisma, actor.companyId, o.paymentMethod === 'DINHEIRO' ? 'CAIXA' : o.paymentMethod.startsWith('CARTAO') && o.origin === 'PDV' ? 'CARTAO' : 'CONTA_DIGITAL');
     for (const e of entries) await payEntry(actor.companyId, actor.orgId, e.id, { bankAccountId: bank?.id, method: o.paymentMethod, userName: actor.userName });
   }
   return entries;

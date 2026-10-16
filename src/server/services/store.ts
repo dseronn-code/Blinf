@@ -10,6 +10,7 @@ import { getAvailability } from './stock';
 import { resolvePrice, createOrder } from './sales';
 import { quoteFreight } from './logistics';
 import { defaultBankAccount } from './finance';
+import { evaluateCoupon } from './operations';
 
 export async function storeBySlug(slug: string) {
   const store = await prisma.store.findUnique({ where: { slug } });
@@ -40,13 +41,13 @@ export async function storeCatalog(slug: string) {
   return { store, company: { name: company.tradeName || company.name, city: company.city, uf: company.uf, cnpj: company.cnpj, phone: company.phone, email: company.email }, products: out.filter((p) => p.price > 0), categories };
 }
 
-export async function storeFreight(slug: string, zip: string, items: { productId: string; quantity: number }[]) {
+export async function storeFreight(slug: string, zip: string, items: { productId: string; quantity: number }[], uf?: string) {
   const { store, company } = await storeBySlug(slug);
   const products = await prisma.product.findMany({ where: { id: { in: items.map((i) => i.productId) } } });
   const weight = items.reduce((a, i) => a + (products.find((p) => p.id === i.productId)?.weight || 0.3) * i.quantity, 0);
   const subtotal = (await Promise.all(items.map(async (i) => (await resolvePrice(prisma, i.productId, store.priceListId)) * i.quantity))).reduce((a, b) => a + b, 0);
   const options = quoteFreight({ fromZip: company.zip || '', toZip: zip, weight, value: subtotal }).filter((o) => ['PAC', 'SEDEX', '.Package', 'Loggi Express'].some((s) => o.service.startsWith(s)) && o.provider !== 'GESTAO_ENVIOS');
-  const free = store.freeShippingAbove > 0 && subtotal >= store.freeShippingAbove;
+  const free = (store.freeShippingAbove > 0 && subtotal >= store.freeShippingAbove) || (!!uf && store.freeShippingUfs.includes(uf.toUpperCase()));
   return options.map((o, i) => ({ ...o, price: free && i === 0 ? 0 : o.price, free: free && i === 0 }));
 }
 
@@ -56,6 +57,7 @@ export type CheckoutInput = {
   shipping: { service: string; price: number };
   paymentMethod: 'PIX' | 'BOLETO' | 'CARTAO_CREDITO';
   installments?: number;
+  couponCode?: string;
 };
 
 export async function storeCheckout(slug: string, input: CheckoutInput) {
@@ -80,13 +82,22 @@ export async function storeCheckout(slug: string, input: CheckoutInput) {
   else contact = await prisma.contact.create({ data: { organizationId: company.organizationId, types: ['CLIENTE'], personType: doc.length === 14 ? 'PJ' : 'PF', name: c.name, document: doc, email: c.email, mobile: c.phone || null, ...addr, notes: 'Cadastrado pela loja virtual' } });
   const items = await Promise.all(input.items.map(async (i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: await resolvePrice(prisma, i.productId, store.priceListId) })));
   const subtotal = items.reduce((a, i) => a + i.quantity * i.unitPrice, 0);
-  const discount = input.paymentMethod === 'PIX' ? round2((subtotal * store.pixDiscount) / 100) : 0;
+  const coupon = await evaluateCoupon(company.id, input.couponCode, subtotal);
+  const discount = round2((input.paymentMethod === 'PIX' ? (subtotal * store.pixDiscount) / 100 : 0) + (coupon?.discount || 0));
+  // Frete: recalculado no servidor (não confia no valor do navegador)
+  const options = await storeFreight(slug, addr.zip, input.items, addr.uf);
+  const chosen = options.find((o) => o.service === input.shipping?.service) || options[0];
+  const freight = coupon?.freeShipping ? 0 : round2(chosen?.price || 0);
   const order = await createOrder(actor, {
-    customerId: contact.id, origin: 'LOJA', externalId: `LV-${randomDigits(6)}`, items, discount, freight: round2(Number(input.shipping?.price) || 0), shippingService: input.shipping?.service,
+    customerId: contact.id, origin: 'LOJA', externalId: `LV-${randomDigits(6)}`, items, discount, freight, shippingService: chosen?.service,
     paymentMethod: input.paymentMethod, installments: input.paymentMethod === 'CARTAO_CREDITO' ? input.installments || 1 : 1, paymentTermDays: input.paymentMethod === 'BOLETO' ? 3 : 0,
     // Cartão é aprovado na hora (gateway simulado); Pix/boleto aguardam pagamento
     paidOnCreate: input.paymentMethod === 'CARTAO_CREDITO', warehouseId: store.warehouseId, shipTo: { name: c.name, ...addr }, notes: 'Pedido da loja virtual',
   });
+  if (coupon) {
+    await prisma.coupon.update({ where: { id: coupon.coupon.id }, data: { uses: { increment: 1 } } });
+    await prisma.salesOrder.update({ where: { id: order.id }, data: { couponCode: coupon.coupon.code } });
+  }
   // Recebível + link de pagamento para Pix/boleto (o pagamento simulado baixa a conta)
   let payment: Record<string, unknown> = { method: input.paymentMethod, status: input.paymentMethod === 'CARTAO_CREDITO' ? 'APROVADO' : 'AGUARDANDO' };
   if (input.paymentMethod !== 'CARTAO_CREDITO') {

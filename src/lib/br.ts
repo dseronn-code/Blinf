@@ -93,11 +93,11 @@ function mod11Key(s: string) {
  * Chave de acesso NF-e/NFC-e (44 dígitos):
  * cUF(2) AAMM(4) CNPJ(14) mod(2) série(3) nNF(9) tpEmis(1) cNF(8) DV(1)
  */
-export function buildAccessKey(p: { uf: string; date: Date; cnpj: string; model: 55 | 65; series: number; number: number; code?: string }) {
+export function buildAccessKey(p: { uf: string; date: Date; cnpj: string; model: 55 | 65; series: number; number: number; code?: string; tpEmis?: number }) {
   const cuf = UF_CODES[p.uf] || '35';
   const aamm = `${String(p.date.getFullYear()).slice(2)}${String(p.date.getMonth() + 1).padStart(2, '0')}`;
   const cnpj = onlyDigits(p.cnpj).padStart(14, '0');
-  const base = `${cuf}${aamm}${cnpj}${p.model}${String(p.series).padStart(3, '0')}${String(p.number).padStart(9, '0')}1${(p.code || randomDigits(8)).padStart(8, '0')}`;
+  const base = `${cuf}${aamm}${cnpj}${p.model}${String(p.series).padStart(3, '0')}${String(p.number).padStart(9, '0')}${p.tpEmis || 1}${(p.code || randomDigits(8)).padStart(8, '0')}`;
   return base + mod11Key(base);
 }
 
@@ -215,6 +215,13 @@ export function buildEan13(base12: string) {
   const sum = d.split('').reduce((a, c, i) => a + Number(c) * (i % 2 ? 3 : 1), 0);
   return d + ((10 - (sum % 10)) % 10);
 }
+
+/** Fundo de Combate à Pobreza (FCP) — percentual adicional por UF de destino (aproximação) */
+export const FCP_RATE: Record<string, number> = { AL: 1, BA: 2, CE: 2, GO: 2, MA: 2, MG: 2, MS: 2, MT: 2, PB: 2, PE: 2, PI: 1, RJ: 2, RN: 2, SE: 1, TO: 2 };
+
+/** Reforma tributária (LC 214/2025) — alíquotas de teste de 2026 (informativas no documento) */
+export const CBS_RATE = Number(process.env.CBS_RATE ?? 0.9);
+export const IBS_RATE = Number(process.env.IBS_RATE ?? 0.1);
 
 /** Região aproximada pelo 1º dígito do CEP (para simulação de frete) */
 export function cepRegion(cep: string) {

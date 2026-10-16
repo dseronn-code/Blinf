@@ -18,6 +18,8 @@ import { syncListings } from './integrations';
 import { getAvailability } from './stock';
 import { notify } from './notify';
 import { payEntry } from './finance';
+import { sendMessage } from './messaging';
+import { money } from '@/lib/utils';
 
 type Handler = (p: EventPayload, actor: Actor) => Promise<string | void>;
 export type AutomationDef = { key: string; name: string; description: string; event: DomainEvent; group: string; defaultActive?: boolean; when?: (p: EventPayload) => boolean; run: Handler };
@@ -186,7 +188,11 @@ export const AUTOMATIONS: AutomationDef[] = [
     description: 'Envia e-mail (simulado) ao cliente com o código de rastreio e o link de acompanhamento.',
     run: async (p) => {
       const s = await prisma.shipment.findUnique({ where: { id: str(p.shipmentId) }, include: { salesOrder: { include: { customer: true } } } });
-      return `E-mail simulado para ${s?.salesOrder.customer.email || 'cliente'}: rastreio ${s?.trackingCode}`;
+      const c = s?.salesOrder.customer;
+      const body = `Olá, ${c?.name}! Seu pedido nº ${s?.salesOrder.number} foi postado via ${s?.carrier} (${s?.service}).\nCódigo de rastreio: ${s?.trackingCode}\nPrazo estimado: ${s?.deadlineDays} dia(s) úteis.`;
+      await sendMessage(str(p.companyId), { to: c?.email, subject: `Seu pedido ${s?.salesOrder.number} foi enviado`, body, related: `order:${s?.salesOrderId}` });
+      await sendMessage(str(p.companyId), { channel: 'WHATSAPP', to: c?.mobile, subject: 'Rastreio', body, related: `order:${s?.salesOrderId}` });
+      return `Rastreio ${s?.trackingCode} enviado para ${c?.email || c?.mobile || 'cliente sem contato'}`;
     },
   },
   {
@@ -204,7 +210,11 @@ export const AUTOMATIONS: AutomationDef[] = [
     run: async (p) => {
       const inv = await prisma.invoice.findUnique({ where: { id: str(p.invoiceId) } });
       const c = inv?.customerId ? await prisma.contact.findUnique({ where: { id: inv.customerId } }) : null;
-      return `${inv?.model} ${inv?.number}: e-mail simulado para ${c?.email || 'consumidor'} e contabilidade`;
+      const doc = inv?.model === 'NFSE' ? 'NFS-e' : inv?.model === 'NFCE' ? 'NFC-e' : 'NF-e';
+      if (c?.email && inv) await sendMessage(str(p.companyId), { to: c.email, subject: `${doc} nº ${inv.number} emitida`, body: `Olá, ${c.name}!\nSegue a ${doc} nº ${inv.number} no valor de ${money(inv.total)}.\nChave de acesso: ${inv.accessKey || inv.verificationCode}\nDANFE e XML disponíveis no portal (anexos no ambiente real).`, related: `invoice:${inv.id}` });
+      const acct = process.env.ACCOUNTANT_EMAIL;
+      if (acct && inv) await sendMessage(str(p.companyId), { to: acct, subject: `XML ${doc} ${inv.number}`, body: `XML da ${doc} ${inv.number} (${inv.accessKey || ''}) disponível para escrituração.`, related: `invoice:${inv.id}` });
+      return `${doc} ${inv?.number}: enviada para ${c?.email || 'consumidor sem e-mail'}${acct ? ' e contador' : ''}`;
     },
   },
   // ---------------- Financeiro ----------------
@@ -238,6 +248,10 @@ export const AUTOMATIONS: AutomationDef[] = [
     description: 'Rotina diária: notifica e envia lembrete (simulado) aos clientes com contas vencidas.',
     run: async (_p, a) => {
       const overdue = await prisma.financialEntry.findMany({ where: { companyId: a.companyId, type: 'RECEBER', status: { in: ['ABERTO', 'PARCIAL'] }, dueDate: { lt: new Date(new Date().toDateString()) } } });
+      for (const e of overdue.slice(0, 50)) {
+        const c = e.contactId ? await prisma.contact.findUnique({ where: { id: e.contactId } }) : null;
+        if (c?.email) await sendMessage(a.companyId, { to: c.email, subject: 'Lembrete de pagamento em aberto', body: `Olá, ${c.name}. Identificamos o título "${e.description}" de ${money(e.amount - e.paidAmount)}, vencido em ${e.dueDate.toLocaleDateString('pt-BR')}.${e.boletoLine ? `\nLinha digitável: ${e.boletoLine}` : ''}${e.pixPayload ? `\nPix copia e cola: ${e.pixPayload}` : ''}`, related: `entry:${e.id}` });
+      }
       if (overdue.length) {
         const total = round2(overdue.reduce((s, e) => s + e.amount - e.paidAmount, 0));
         await notify(a.companyId, 'Contas vencidas', `${overdue.length} conta(s) a receber vencida(s) — R$ ${total.toFixed(2)}. Lembretes enviados (simulado).`, { level: 'error', link: '/financeiro/receber?status=VENCIDO' });
@@ -291,14 +305,22 @@ export const AUTOMATIONS: AutomationDef[] = [
     description: 'Envia mensagem (simulada) ao cliente avisando que o equipamento/serviço está pronto.',
     run: async (p, a) => {
       const os = await prisma.serviceOrder.findUnique({ where: { id: str(p.serviceOrderId) }, include: { customer: true } });
-      await notify(a.companyId, `OS ${os?.number} concluída`, `Cliente ${os?.customer.name} avisado (WhatsApp/e-mail simulado)`, { level: 'success', link: '/servicos' });
+      const body = `Olá, ${os?.customer.name}! Seu ${os?.equipment || 'serviço'} (OS nº ${os?.number}) está pronto para retirada. Total: ${money(os?.total)}.`;
+      await sendMessage(a.companyId, { to: os?.customer.email, subject: `OS ${os?.number} concluída`, body, related: `os:${os?.id}` });
+      await sendMessage(a.companyId, { channel: 'WHATSAPP', to: os?.customer.mobile, subject: 'OS concluída', body, related: `os:${os?.id}` });
+      await notify(a.companyId, `OS ${os?.number} concluída`, `Cliente ${os?.customer.name} avisado por e-mail/WhatsApp`, { level: 'success', link: '/servicos' });
       return `Aviso enviado para ${os?.customer.mobile || os?.customer.email || 'cliente'}`;
     },
   },
   {
     key: 'BOAS_VINDAS_CLIENTE', group: 'Cadastros', event: 'contact.created', name: 'E-mail de boas-vindas para novo cliente',
     description: 'Novo cliente cadastrado recebe e-mail de boas-vindas (simulado).',
-    run: async (p) => `E-mail de boas-vindas simulado para ${str(p.email) || 'cliente sem e-mail'}`,
+    run: async (p) => {
+      const c = await prisma.contact.findUnique({ where: { id: str(p.contactId) } });
+      const company = await prisma.company.findUnique({ where: { id: str(p.companyId) } });
+      await sendMessage(str(p.companyId), { to: c?.email, subject: `Bem-vindo(a) à ${company?.tradeName || company?.name}!`, body: `Olá, ${c?.name}! Seu cadastro foi realizado. Conte conosco.`, related: `contact:${c?.id}` });
+      return `Boas-vindas enviadas para ${c?.email || 'cliente sem e-mail'}`;
+    },
   },
 ];
 

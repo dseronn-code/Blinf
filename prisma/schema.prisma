@@ -69,6 +69,10 @@ model Company {
   certIssuer     String?
   certValidUntil DateTime?
   certUploadedAt DateTime?
+  certPfx        Bytes?
+  certPassword   String?
+  certSerial     String?
+  sefazMode      String    @default("SIMULADO") // SIMULADO | ASSINADO (XML assinado com o certificado real)
   createdAt      DateTime  @default(now())
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -90,15 +94,19 @@ model Role {
 }
 
 model User {
-  id             String    @id @default(cuid())
-  organizationId String
-  roleId         String
-  name           String
-  email          String    @unique
-  passwordHash   String
-  active         Boolean   @default(true)
-  lastLoginAt    DateTime?
-  createdAt      DateTime  @default(now())
+  id               String    @id @default(cuid())
+  organizationId   String
+  roleId           String
+  name             String
+  email            String    @unique
+  passwordHash     String
+  active           Boolean   @default(true)
+  lastLoginAt      DateTime?
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean   @default(false)
+  resetToken       String?   @unique
+  resetExpires     DateTime?
+  createdAt        DateTime  @default(now())
 
   organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   role          Role           @relation(fields: [roleId], references: [id])
@@ -284,6 +292,9 @@ model Product {
   location       String? // Localização física (corredor/prateleira)
   supplierId     String? // Fornecedor padrão (para reposição automática)
   imageUrl       String?
+  images         String[]
+  mvaST          Float    @default(0) // MVA % para ICMS-ST (0 = sem ST)
+  scaleCode      String? // Código para etiqueta de balança (5 dígitos)
   description    String?
   active         Boolean  @default(true)
   featured       Boolean  @default(false) // Destaque na loja virtual
@@ -657,6 +668,8 @@ model SalesOrder {
   warehouseId      String?
   subtotal         Float     @default(0)
   discount         Float     @default(0)
+  couponCode       String?
+  parentOrderId    String? // pedido de origem (desmembramento)
   freight          Float     @default(0)
   otherCosts       Float     @default(0)
   total            Float     @default(0)
@@ -827,6 +840,18 @@ model Invoice {
   cofinsValue      Float     @default(0)
   issValue         Float     @default(0)
   approxTaxes      Float     @default(0) // Lei da transparência (IBPT)
+  icmsStBase       Float     @default(0)
+  icmsStValue      Float     @default(0)
+  difalValue       Float     @default(0)
+  fcpValue         Float     @default(0)
+  ibsValue         Float     @default(0)
+  cbsValue         Float     @default(0)
+  finalidade       Int       @default(1) // 1=Normal 2=Complementar 3=Ajuste 4=Devolução
+  refAccessKey     String? // NF-e referenciada (devolução)
+  returnId         String?
+  transferId       String?
+  contingency      Boolean   @default(false)
+  signed           Boolean   @default(false)
   total            Float     @default(0)
   protocol         String?
   authorizedAt     DateTime?
@@ -872,6 +897,14 @@ model InvoiceItem {
   cofinsValue Float   @default(0)
   issRate     Float   @default(0)
   issValue    Float   @default(0)
+  icmsStBase  Float   @default(0)
+  icmsStValue Float   @default(0)
+  difalValue  Float   @default(0)
+  fcpValue    Float   @default(0)
+  ibsRate     Float   @default(0)
+  ibsValue    Float   @default(0)
+  cbsRate     Float   @default(0)
+  cbsValue    Float   @default(0)
   invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 }
 
@@ -1025,12 +1058,12 @@ model PosTerminal {
 }
 
 model PosTransaction {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   companyId    String
   terminalId   String
   /// DEBITO | CREDITO | PIX
   method       String
-  installments Int      @default(1)
+  installments Int       @default(1)
   amount       Float
   fee          Float
   netAmount    Float
@@ -1038,9 +1071,11 @@ model PosTransaction {
   authCode     String
   brand        String?
   /// APROVADA | NEGADA | ESTORNADA
-  status       String   @default("APROVADA")
+  status       String    @default("APROVADA")
   orderId      String?
-  createdAt    DateTime @default(now())
+  settledAt    DateTime?
+  anticipated  Boolean   @default(false)
+  createdAt    DateTime  @default(now())
 }
 
 // ----------------------------------------------------------------------------
@@ -1165,6 +1200,7 @@ model Shipment {
   height       Float      @default(10)
   width        Float      @default(15)
   length       Float      @default(20)
+  volumes      Int        @default(1)
   trackingCode String?
   /// PENDENTE | ETIQUETA_GERADA | POSTADO | EM_TRANSITO | SAIU_PARA_ENTREGA | ENTREGUE | CANCELADO
   status       String     @default("PENDENTE")
@@ -1240,6 +1276,10 @@ model Store {
   /// Seções exibidas na home, na ordem: ["banner","destaques","categorias","todos","sobre"]
   sections          Json     @default("[\"banner\",\"destaques\",\"categorias\",\"todos\",\"sobre\"]")
   priceListId       String?
+  freeShippingUfs   String[]
+  customDomain      String?  @unique
+  seoTitle          String?
+  seoDescription    String?
   warehouseId       String?
   updatedAt         DateTime @updatedAt
 }
@@ -1280,4 +1320,194 @@ model AiMessage {
   role      String // user | assistant
   content   String
   createdAt DateTime @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// Recursos adicionais
+// ----------------------------------------------------------------------------
+
+/// Arquivos enviados (imagens de produto, logotipos, certificados) — guardados no banco
+model Upload {
+  id             String   @id @default(cuid())
+  organizationId String
+  filename       String
+  mime           String
+  size           Int
+  data           Bytes
+  createdAt      DateTime @default(now())
+}
+
+/// Inutilização de faixa de numeração de NF-e/NFC-e
+model NumberVoid {
+  id         String   @id @default(cuid())
+  companyId  String
+  model      String
+  series     Int
+  fromNumber Int
+  toNumber   Int
+  reason     String
+  protocol   String
+  createdAt  DateTime @default(now())
+}
+
+/// Devolução / troca de venda
+model SalesReturn {
+  id              String    @id @default(cuid())
+  companyId       String
+  number          Int
+  salesOrderId    String
+  /// ABERTA | CONCLUIDA | CANCELADA
+  status          String    @default("ABERTA")
+  /// DEVOLUCAO | TROCA
+  kind            String    @default("DEVOLUCAO")
+  reason          String
+  /// [{ salesOrderItemId, productId, description, quantity, unitPrice, restock }]
+  items           Json
+  total           Float
+  /// ESTORNO (paga ao cliente) | CREDITO (abate títulos em aberto) | NENHUM
+  refundMethod    String    @default("ESTORNO")
+  invoiceId       String?
+  refundEntryId   String?
+  exchangeOrderId String?
+  createdAt       DateTime  @default(now())
+  finishedAt      DateTime?
+
+  @@unique([companyId, number])
+}
+
+/// Transferência de mercadoria entre empresas (CNPJs) da conta
+model CompanyTransfer {
+  id              String   @id @default(cuid())
+  number          Int
+  fromCompanyId   String
+  toCompanyId     String
+  fromWarehouseId String
+  toWarehouseId   String
+  items           Json // [{ productId, quantity, unitCost }]
+  total           Float
+  invoiceId       String?
+  status          String   @default("CONCLUIDA")
+  createdAt       DateTime @default(now())
+}
+
+/// Manifestação do destinatário (NF-e emitidas contra o CNPJ da empresa)
+model NfeDistribution {
+  id         String   @id @default(cuid())
+  companyId  String
+  accessKey  String
+  number     String
+  issuerName String
+  issuerCnpj String
+  issueDate  DateTime
+  total      Float
+  /// SEM_MANIFESTACAO | CIENCIA | CONFIRMADA | DESCONHECIDA | NAO_REALIZADA
+  status     String   @default("SEM_MANIFESTACAO")
+  xml        String
+  inboundId  String?
+  createdAt  DateTime @default(now())
+
+  @@unique([companyId, accessKey])
+}
+
+model Coupon {
+  id         String    @id @default(cuid())
+  companyId  String
+  code       String
+  /// PERCENTUAL | VALOR | FRETE_GRATIS
+  type       String    @default("PERCENTUAL")
+  value      Float     @default(0)
+  minAmount  Float     @default(0)
+  maxUses    Int       @default(0) // 0 = ilimitado
+  uses       Int       @default(0)
+  validUntil DateTime?
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+
+  @@unique([companyId, code])
+}
+
+/// Inventário por sessão de contagem
+model InventoryCount {
+  id          String               @id @default(cuid())
+  companyId   String
+  number      Int
+  warehouseId String
+  /// ABERTO | CONCLUIDO | CANCELADO
+  status      String               @default("ABERTO")
+  notes       String?
+  userName    String?
+  createdAt   DateTime             @default(now())
+  finishedAt  DateTime?
+  items       InventoryCountItem[]
+
+  @@unique([companyId, number])
+}
+
+model InventoryCountItem {
+  id        String         @id @default(cuid())
+  countId   String
+  productId String
+  expected  Float
+  counted   Float?
+  count     InventoryCount @relation(fields: [countId], references: [id], onDelete: Cascade)
+
+  @@unique([countId, productId])
+}
+
+/// Rateio de lançamento financeiro entre centros de custo
+model CostAllocation {
+  id           String @id @default(cuid())
+  entryId      String
+  costCenterId String
+  percent      Float
+
+  @@index([entryId])
+}
+
+/// Orçamento mensal por conta do plano de contas
+model Budget {
+  id             String @id @default(cuid())
+  companyId      String
+  chartAccountId String
+  year           Int
+  month          Int
+  amount         Float
+
+  @@unique([companyId, chartAccountId, year, month])
+}
+
+/// Caixa de saída de mensagens (e-mail via SMTP quando configurado; WhatsApp simulado)
+model OutboxMessage {
+  id        String    @id @default(cuid())
+  companyId String
+  /// EMAIL | WHATSAPP
+  channel   String    @default("EMAIL")
+  to        String
+  subject   String
+  body      String
+  /// PENDENTE | ENVIADO | SIMULADO | ERRO
+  status    String    @default("PENDENTE")
+  error     String?
+  related   String?
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  @@index([companyId, createdAt])
+}
+
+/// Fila de tarefas em segundo plano (webhooks, mensagens, sincronizações) com novas tentativas
+model Job {
+  id          String    @id @default(cuid())
+  type        String
+  payload     Json
+  /// PENDENTE | PROCESSANDO | CONCLUIDO | ERRO
+  status      String    @default("PENDENTE")
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  runAt       DateTime  @default(now())
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  doneAt      DateTime?
+
+  @@index([status, runAt])
 }

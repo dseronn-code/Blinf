@@ -270,7 +270,8 @@ export async function launchInbound(actor: Actor, id: string, opts: { warehouseI
 /** Gera um XML de NF-e de fornecedor (para testar a importação) */
 export async function sampleSupplierXml(actor: Actor) {
   const company = (await prisma.company.findUnique({ where: { id: actor.companyId } }))!;
-  const supplier = await prisma.contact.findFirst({ where: { organizationId: actor.orgId, types: { has: 'FORNECEDOR' }, personType: 'PJ' } });
+  const suppliers = await prisma.contact.findMany({ where: { organizationId: actor.orgId, types: { has: 'FORNECEDOR' }, personType: 'PJ' } });
+  const supplier = suppliers.length ? suppliers[Math.floor(Math.random() * suppliers.length)] : null;
   const products = await prisma.product.findMany({ where: { organizationId: actor.orgId, kind: { in: ['SIMPLES', 'MATERIA_PRIMA', 'VARIACAO'] } }, take: 30 });
   const chosen = products.sort(() => Math.random() - 0.5).slice(0, 4);
   const cnpj = onlyDigits(supplier?.document) || '11222333000181';

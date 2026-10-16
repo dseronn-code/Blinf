@@ -20,6 +20,6 @@ export function scopeWhere(def: ResourceDef, ctx: Ctx): Record<string, unknown> 
 
 /** Remove campos sensíveis das respostas */
 export function clean<T>(row: T): T {
-  if (row && typeof row === 'object') delete (row as Record<string, unknown>).passwordHash;
+  if (row && typeof row === 'object') for (const k of ['passwordHash', 'certPfx', 'certPassword', 'twoFactorSecret', 'resetToken']) delete (row as Record<string, unknown>)[k];
   return row;
 }

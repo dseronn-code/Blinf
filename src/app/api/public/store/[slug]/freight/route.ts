@@ -5,7 +5,7 @@ import { storeFreight } from '@/server/services/store';
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
     const body = await req.json();
-    return NextResponse.json({ options: await storeFreight((await params).slug, body.zip, body.items || []) });
+    return NextResponse.json({ options: await storeFreight((await params).slug, body.zip, body.items || [], body.uf) });
   } catch (e) {
     return toErrorResponse(e);
   }

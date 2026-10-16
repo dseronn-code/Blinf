@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { getCtx, requirePerm, type Ctx } from './context';
+import { prisma } from '@/lib/db';
 import type { AccessLevel, ModuleKey } from '@/lib/permissions';
 
 import { HttpError } from './errors';
@@ -41,6 +42,7 @@ export function route(mod: ModuleKey | null, level: AccessLevel, fn: Handler) {
       }
       const query = new URL(req.url).searchParams;
       const result = await fn({ req, ctx, params, body, query });
+      if (req.method !== 'GET') audit(ctx, req, params, body).catch(() => {});
       if (result instanceof Response) return result;
       return NextResponse.json(result ?? { ok: true });
     } catch (e) {
@@ -58,4 +60,20 @@ export function fileResponse(data: Uint8Array | Buffer | string, contentType: st
       'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${filename}"`,
     },
   });
+}
+
+const SENSITIVE = /password|secret|token|pfx|key/i;
+
+/** Trilha de auditoria: registra toda escrita bem-sucedida (usuário, rota, resumo do corpo) */
+async function audit(ctx: Ctx, req: Request, params: Record<string, string>, body: unknown) {
+  const path = new URL(req.url).pathname.replace(/^\/api\//, '');
+  const parts = path.split('/');
+  const entity = parts[0] === 'r' ? parts[1] : parts[0];
+  const entityId = params.id || null;
+  let details: string | undefined;
+  if (body && typeof body === 'object') {
+    const clean = Object.fromEntries(Object.entries(body as Record<string, unknown>).filter(([k]) => !SENSITIVE.test(k)).map(([k, v]) => [k, typeof v === 'object' ? '[…]' : v]));
+    details = JSON.stringify(clean).slice(0, 400);
+  }
+  await prisma.auditLog.create({ data: { companyId: ctx.companyId, userId: ctx.userId, action: `${req.method} /${path}`, entity, entityId, details } });
 }
