@@ -19,7 +19,8 @@ export default function FreightQuote() {
   return (
     <div>
       <PageHeader title="Cotação de frete" description="Compare Correios (PAC/SEDEX), transportadoras do Melhor Envio e GestãoPro Envios (tarifas com desconto)" />
-      <SimBanner>preços calculados por fórmula própria considerando peso real × cúbico (L×A×C/6000), distância por região do CEP e seguro (0,5%).</SimBanner>
+      {!res?.real && <SimBanner>sem conta do Melhor Envio ou dos Correios conectada (Integrações → Contas), os preços são calculados por fórmula própria considerando peso real × cúbico (L×A×C/6000), distância por região do CEP e seguro (0,5%).</SimBanner>}
+      {res?.errors?.length > 0 && <div className="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-900">{res.errors.map((e: string, i: number) => <div key={i}>{e}</div>)}</div>}
       <Card className="mb-3"><CardContent className="grid grid-cols-2 gap-3 md:grid-cols-7">
         <Field label="Cotar a partir de um pedido" className="col-span-2"><EntityPicker endpoint="/api/sales-orders?status=ABERTO,FATURADO,SEPARADO" value={orderId} label={orderId ? 'Pedido selecionado' : null} onChange={(v) => setOrderId(v)} map={(r: any) => ({ id: r.id, label: `#${r.number} — ${r.customer.name}`, sub: money(r.total) })} placeholder="ou informe o pacote →" /></Field>
         <Field label="CEP destino"><Input disabled={!!orderId} value={f.toZip} onChange={(e) => setF({ ...f, toZip: e.target.value })} placeholder="00000-000" /></Field>
@@ -31,7 +32,7 @@ export default function FreightQuote() {
       {res?.package && <p className="mb-2 text-sm text-muted-foreground">Pacote do pedido: {num(res.package.weight, 3)} kg · {res.package.height}x{res.package.width}x{res.package.length} cm</p>}
       {res && <DataTable rows={res.options.map((o: any, i: number) => ({ ...o, id: String(i) }))} columns={[
         { key: 'carrier', header: 'Transportadora', cell: (r: any) => <b>{r.carrier}</b> }, { key: 'service', header: 'Serviço' },
-        { key: 'provider', header: 'Via', cell: (r: any) => <Badge tone={r.provider === 'GESTAO_ENVIOS' ? 'green' : r.provider === 'MELHOR_ENVIO' ? 'blue' : 'yellow'}>{r.provider.replace('_', ' ')}</Badge> },
+        { key: 'provider', header: 'Via', cell: (r: any) => <span className="flex items-center gap-1"><Badge tone={r.provider === 'GESTAO_ENVIOS' ? 'green' : r.provider === 'MELHOR_ENVIO' ? 'blue' : 'yellow'}>{r.provider.replace('_', ' ')}</Badge>{!r.simulated && <Badge tone="green">contrato</Badge>}</span> },
         { key: 'deadlineDays', header: 'Prazo', align: 'right', cell: (r: any) => `${r.deadlineDays} dia(s) úteis` }, { key: 'price', header: 'Preço', align: 'right', cell: (r: any, ) => <b>{money(r.price)}</b> },
       ]} />}
     </div>

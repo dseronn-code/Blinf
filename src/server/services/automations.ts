@@ -18,7 +18,7 @@ import { syncListings } from './integrations';
 import { getAvailability } from './stock';
 import { notify } from './notify';
 import { payEntry } from './finance';
-import { sendMessage } from './messaging';
+import { sendMessage, sendTemplate, hasWhatsApp } from './messaging';
 import { money } from '@/lib/utils';
 
 type Handler = (p: EventPayload, actor: Actor) => Promise<string | void>;
@@ -190,8 +190,9 @@ export const AUTOMATIONS: AutomationDef[] = [
       const s = await prisma.shipment.findUnique({ where: { id: str(p.shipmentId) }, include: { salesOrder: { include: { customer: true } } } });
       const c = s?.salesOrder.customer;
       const body = `Olá, ${c?.name}! Seu pedido nº ${s?.salesOrder.number} foi postado via ${s?.carrier} (${s?.service}).\nCódigo de rastreio: ${s?.trackingCode}\nPrazo estimado: ${s?.deadlineDays} dia(s) úteis.`;
-      await sendMessage(str(p.companyId), { to: c?.email, subject: `Seu pedido ${s?.salesOrder.number} foi enviado`, body, related: `order:${s?.salesOrderId}` });
-      await sendMessage(str(p.companyId), { channel: 'WHATSAPP', to: c?.mobile, subject: 'Rastreio', body, related: `order:${s?.salesOrderId}` });
+      const link = s?.trackingCode ? (s.carrier === 'Correios' ? `https://rastreamento.correios.com.br/app/index.php?objeto=${s.trackingCode}` : `https://www.melhorrastreio.com.br/rastreio/${s.trackingCode}`) : '';
+      await sendTemplate(str(p.companyId), 'rastreio', { cliente: c?.name, pedido: s?.salesOrder.number, transportadora: `${s?.carrier} (${s?.service})`, rastreio: s?.trackingCode, prazo: `${s?.deadlineDays} dia(s) úteis`, link }, { to: c?.email, related: `order:${s?.salesOrderId}` });
+      await sendMessage(str(p.companyId), { channel: 'WHATSAPP', to: c?.mobile, subject: 'Rastreio', body, related: `order:${s?.salesOrderId}`, wa: { event: 'rastreio', params: [c?.name || '', String(s?.salesOrder.number), `${s?.carrier} (${s?.service})`, s?.trackingCode || ''] } });
       return `Rastreio ${s?.trackingCode} enviado para ${c?.email || c?.mobile || 'cliente sem contato'}`;
     },
   },
@@ -211,9 +212,9 @@ export const AUTOMATIONS: AutomationDef[] = [
       const inv = await prisma.invoice.findUnique({ where: { id: str(p.invoiceId) } });
       const c = inv?.customerId ? await prisma.contact.findUnique({ where: { id: inv.customerId } }) : null;
       const doc = inv?.model === 'NFSE' ? 'NFS-e' : inv?.model === 'NFCE' ? 'NFC-e' : 'NF-e';
-      if (c?.email && inv) await sendMessage(str(p.companyId), { to: c.email, subject: `${doc} nº ${inv.number} emitida`, body: `Olá, ${c.name}!\nSegue a ${doc} nº ${inv.number} no valor de ${money(inv.total)}.\nChave de acesso: ${inv.accessKey || inv.verificationCode}\nDANFE e XML disponíveis no portal (anexos no ambiente real).`, related: `invoice:${inv.id}` });
+      if (c?.email && inv) await sendTemplate(str(p.companyId), 'nota_emitida', { cliente: c.name, documento: doc, nota: inv.number, valor: money(inv.total), chave: inv.accessKey || inv.verificationCode }, { to: c.email, related: `invoice:${inv.id}`, attachments: [{ type: 'invoice', id: inv.id }] });
       const acct = process.env.ACCOUNTANT_EMAIL;
-      if (acct && inv) await sendMessage(str(p.companyId), { to: acct, subject: `XML ${doc} ${inv.number}`, body: `XML da ${doc} ${inv.number} (${inv.accessKey || ''}) disponível para escrituração.`, related: `invoice:${inv.id}` });
+      if (acct && inv) await sendMessage(str(p.companyId), { to: acct, subject: `XML ${doc} ${inv.number}`, body: `XML da ${doc} ${inv.number} (${inv.accessKey || ''}) em anexo para escrituração.`, related: `invoice:${inv.id}`, attachments: [{ type: 'invoice', id: inv.id, pdf: false }] });
       return `${doc} ${inv?.number}: enviada para ${c?.email || 'consumidor sem e-mail'}${acct ? ' e contador' : ''}`;
     },
   },
@@ -250,7 +251,9 @@ export const AUTOMATIONS: AutomationDef[] = [
       const overdue = await prisma.financialEntry.findMany({ where: { companyId: a.companyId, type: 'RECEBER', status: { in: ['ABERTO', 'PARCIAL'] }, dueDate: { lt: new Date(new Date().toDateString()) } } });
       for (const e of overdue.slice(0, 50)) {
         const c = e.contactId ? await prisma.contact.findUnique({ where: { id: e.contactId } }) : null;
-        if (c?.email) await sendMessage(a.companyId, { to: c.email, subject: 'Lembrete de pagamento em aberto', body: `Olá, ${c.name}. Identificamos o título "${e.description}" de ${money(e.amount - e.paidAmount)}, vencido em ${e.dueDate.toLocaleDateString('pt-BR')}.${e.boletoLine ? `\nLinha digitável: ${e.boletoLine}` : ''}${e.pixPayload ? `\nPix copia e cola: ${e.pixPayload}` : ''}`, related: `entry:${e.id}` });
+        const vars = { cliente: c?.name, documento: e.description, valor: money(e.amount - e.paidAmount), vencimento: e.dueDate.toLocaleDateString('pt-BR'), linha_digitavel: e.boletoLine, pix: e.pixPayload, link: e.paymentUrl };
+        if (c?.email) await sendTemplate(a.companyId, 'cobranca', vars, { to: c.email, related: `entry:${e.id}` });
+        if (c?.mobile && (await hasWhatsApp(a.companyId))) await sendMessage(a.companyId, { channel: 'WHATSAPP', to: c.mobile, subject: 'Cobrança', body: `Olá, ${c.name}. O título "${e.description}" de ${vars.valor} venceu em ${vars.vencimento}.`, related: `entry:${e.id}`, wa: { event: 'cobranca', params: [c.name, e.description, vars.valor, vars.vencimento, e.paymentUrl || e.boletoLine || e.pixPayload || '-'] } });
       }
       if (overdue.length) {
         const total = round2(overdue.reduce((s, e) => s + e.amount - e.paidAmount, 0));
@@ -268,6 +271,26 @@ export const AUTOMATIONS: AutomationDef[] = [
       return r.settled ? `${r.settled} parcela(s) liquidada(s) — ${money(r.net)}` : 'Nenhum recebível vencido';
     },
   },
+  // Reajuste roda antes do faturamento para a cobrança do aniversário já sair com o novo valor
+  {
+    key: 'REAJUSTE_CONTRATOS', group: 'Vendas', event: 'daily.routine', name: 'Reajustar contratos no aniversário',
+    description: 'Rotina diária: aplica o percentual de reajuste anual configurado em cada contrato na data de aniversário.',
+    run: async (_p, a) => {
+      const { adjustDueContracts } = await import('./contracts');
+      const r = await adjustDueContracts(a);
+      return r.length ? `${r.length} contrato(s) reajustado(s)` : 'Nenhum contrato fazendo aniversário';
+    },
+  },
+  {
+    key: 'FATURAR_CONTRATOS', group: 'Vendas', event: 'daily.routine', name: 'Faturar contratos (cobrança recorrente)',
+    description: 'Rotina diária: gera a conta a receber (boleto/Pix) e a NFS-e/NF-e dos contratos com cobrança vencendo nos próximos dias.',
+    run: async (_p, a) => {
+      const { billDueContracts } = await import('./contracts');
+      const r = await billDueContracts(a);
+      if (r.billed) await notify(a.companyId, 'Contratos faturados', `${r.billed} cobrança(s) recorrente(s) gerada(s)${r.failed ? ` · ${r.failed} com erro` : ''}`, { level: r.failed ? 'warning' : 'success', link: '/vendas/contratos' });
+      return r.billed || r.failed ? `${r.billed} faturado(s), ${r.failed} erro(s)` : 'Nenhum contrato a faturar';
+    },
+  },
   {
     key: 'AVISO_DEVOLUCAO', group: 'Vendas', event: 'order.returned', name: 'Avisar cliente sobre a devolução/troca',
     description: 'Ao registrar uma devolução ou troca, envia ao cliente o comprovante com os itens, a NF-e de devolução e o reembolso/crédito.',
@@ -277,7 +300,7 @@ export const AUTOMATIONS: AutomationDef[] = [
       const o = await prisma.salesOrder.findUnique({ where: { id: r.salesOrderId }, include: { customer: true } });
       const items = (r.items as { description: string; quantity: number }[]).map((i) => `- ${i.quantity}x ${i.description}`).join('\n');
       const how = r.kind === 'TROCA' ? 'Um novo pedido de troca foi gerado e será enviado em breve.' : r.refundMethod === 'CREDITO' ? 'O valor foi abatido dos seus títulos em aberto.' : r.refundMethod === 'ESTORNO' ? 'O reembolso foi programado e será creditado em até 5 dias úteis.' : '';
-      await sendMessage(a.companyId, { to: o?.customer.email, subject: `${r.kind === 'TROCA' ? 'Troca' : 'Devolução'} nº ${r.number} registrada`, body: `Olá, ${o?.customer.name}.\n\nRegistramos a ${r.kind === 'TROCA' ? 'troca' : 'devolução'} referente ao pedido nº ${o?.number}:\n${items}\nValor: ${money(r.total)}\n${how}`, related: `return:${r.id}` });
+      await sendTemplate(a.companyId, 'devolucao', { cliente: o?.customer.name, documento: r.kind === 'TROCA' ? 'Troca' : 'Devolução', numero: r.number, pedido: o?.number, itens: items, valor: money(r.total), mensagem: how }, { to: o?.customer.email, related: `return:${r.id}` });
       await notify(a.companyId, 'Devolução registrada', `Devolução nº ${r.number} do pedido ${o?.number} — ${money(r.total)}`, { link: '/vendas/devolucoes' });
       return `Cliente avisado (${o?.customer.email || 'sem e-mail'})`;
     },
@@ -353,8 +376,8 @@ export const AUTOMATIONS: AutomationDef[] = [
     run: async (p, a) => {
       const os = await prisma.serviceOrder.findUnique({ where: { id: str(p.serviceOrderId) }, include: { customer: true } });
       const body = `Olá, ${os?.customer.name}! Seu ${os?.equipment || 'serviço'} (OS nº ${os?.number}) está pronto para retirada. Total: ${money(os?.total)}.`;
-      await sendMessage(a.companyId, { to: os?.customer.email, subject: `OS ${os?.number} concluída`, body, related: `os:${os?.id}` });
-      await sendMessage(a.companyId, { channel: 'WHATSAPP', to: os?.customer.mobile, subject: 'OS concluída', body, related: `os:${os?.id}` });
+      await sendTemplate(a.companyId, 'os_concluida', { cliente: os?.customer.name, numero: os?.number, equipamento: os?.equipment || 'serviço', valor: money(os?.total) }, { to: os?.customer.email, related: `os:${os?.id}` });
+      await sendMessage(a.companyId, { channel: 'WHATSAPP', to: os?.customer.mobile, subject: 'OS concluída', body, related: `os:${os?.id}`, wa: { event: 'os', params: [os?.customer.name || '', String(os?.number), os?.equipment || 'serviço', money(os?.total)] } });
       await notify(a.companyId, `OS ${os?.number} concluída`, `Cliente ${os?.customer.name} avisado por e-mail/WhatsApp`, { level: 'success', link: '/servicos' });
       return `Aviso enviado para ${os?.customer.mobile || os?.customer.email || 'cliente'}`;
     },
@@ -365,7 +388,7 @@ export const AUTOMATIONS: AutomationDef[] = [
     run: async (p) => {
       const c = await prisma.contact.findUnique({ where: { id: str(p.contactId) } });
       const company = await prisma.company.findUnique({ where: { id: str(p.companyId) } });
-      await sendMessage(str(p.companyId), { to: c?.email, subject: `Bem-vindo(a) à ${company?.tradeName || company?.name}!`, body: `Olá, ${c?.name}! Seu cadastro foi realizado. Conte conosco.`, related: `contact:${c?.id}` });
+      await sendTemplate(str(p.companyId), 'boas_vindas', { cliente: c?.name, empresa: company?.tradeName || company?.name }, { to: c?.email, related: `contact:${c?.id}` });
       return `Boas-vindas enviadas para ${c?.email || 'cliente sem e-mail'}`;
     },
   },

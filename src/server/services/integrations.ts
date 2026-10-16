@@ -1,13 +1,17 @@
 /**
- * Central de integrações (SIMULADA): catálogo de conectores, conexão OAuth
- * fictícia, publicação de anúncios, sincronização de estoque/preço e
- * importação automática de pedidos com dados realistas de cada canal.
+ * Central de integrações: catálogo de conectores, publicação/vínculo de anúncios,
+ * sincronização de estoque/preço e importação de pedidos.
+ * Canal ligado a uma conta real (Integrações → Contas: Mercado Livre, Shopee,
+ * Nuvemshop, Shopify, WooCommerce) → chamadas às APIs oficiais (services/marketplace).
+ * Sem conta real → SIMULAÇÃO (OAuth fictício e pedidos com dados realistas).
  */
 import { prisma } from '@/lib/db';
 import { pick, randomInt, round2, randomDigits } from '@/lib/utils';
 import { generateCPF } from '@/lib/br';
 import { getAvailability } from './stock';
 import { resolvePrice, createOrder, type Actor } from './sales';
+import { getAccount } from '@/server/integrations/accounts';
+import { linkedAccount, ensureChannelForAccount, realImportOrders, realLinkListings, pushListing, isRealChannel, MARKETPLACE_PROVIDERS } from './marketplace';
 
 export type ConnectorDef = { provider: string; name: string; category: string; color: string; feePercent: number; description: string; orderPrefix: string };
 
@@ -48,6 +52,20 @@ export const CONNECTORS: ConnectorDef[] = [
 
 export const connector = (provider: string) => CONNECTORS.find((c) => c.provider === provider);
 
+/** Conta real do canal sem interromper o fluxo (falha de token vira log de erro) */
+async function realAccountOf(ch: Parameters<typeof linkedAccount>[0]) {
+  let acc = null;
+  try {
+    acc = await linkedAccount(ch);
+  } catch (e) {
+    await log(ch.id, 'ERRO', (e as Error).message, undefined, false);
+    throw e;
+  }
+  // Canal que já foi ligado a uma conta real nunca volta a simular
+  if (!acc && isRealChannel(ch)) throw new Error(`${ch.name}: a conta real está desconectada — reconecte em Integrações → Contas e credenciais`);
+  return acc;
+}
+
 async function log(channelId: string, type: string, message: string, payload?: unknown, success = true) {
   await prisma.integrationLog.create({ data: { channelId, type, message, payload: (payload as object) ?? undefined, success } });
 }
@@ -55,6 +73,11 @@ async function log(channelId: string, type: string, message: string, payload?: u
 export async function connectChannel(actor: Actor, provider: string, storeName?: string) {
   const def = connector(provider);
   if (!def) throw new Error('Conector desconhecido');
+  // Conta real já conectada em Integrações → Contas: liga o canal a ela em vez de simular
+  if (MARKETPLACE_PROVIDERS.includes(provider)) {
+    const acc = await getAccount(actor.companyId, provider);
+    if (acc) return (await ensureChannelForAccount(acc, { force: true }))!;
+  }
   const existing = await prisma.salesChannel.findFirst({ where: { companyId: actor.companyId, provider } });
   const data = {
     status: 'CONECTADO',
@@ -78,6 +101,9 @@ export async function disconnectChannel(actor: Actor, channelId: string) {
 export async function publishListings(actor: Actor, channelId: string, productIds?: string[]) {
   const ch = await prisma.salesChannel.findFirst({ where: { id: channelId, companyId: actor.companyId } });
   if (!ch) throw new Error('Canal não encontrado');
+  // Canal real: os anúncios são criados no painel do canal e vinculados aqui pelo SKU
+  const acc = await realAccountOf(ch);
+  if (acc) return (await realLinkListings(actor, ch, acc)).linked;
   const products = await prisma.product.findMany({
     where: { organizationId: actor.orgId, active: true, kind: { in: ['SIMPLES', 'VARIACAO', 'KIT', 'FABRICADO'] }, ...(productIds ? { id: { in: productIds } } : { listings: { none: { channelId } } }) },
     take: 200,
@@ -99,8 +125,20 @@ export async function publishListings(actor: Actor, channelId: string, productId
   return count;
 }
 
-/** Sincroniza estoque (e preço) dos anúncios — chamado pela automação em tempo real */
-export async function syncListings(actor: Actor, opts: { productIds?: string[]; channelId?: string; prices?: boolean } = {}) {
+/** Vincula os anúncios existentes no canal real aos produtos pelo SKU */
+export async function linkChannelListings(actor: Actor, channelId: string) {
+  const ch = await prisma.salesChannel.findFirst({ where: { id: channelId, companyId: actor.companyId } });
+  if (!ch) throw new Error('Canal não encontrado');
+  const acc = await realAccountOf(ch);
+  if (!acc) throw new Error('Canal sem conta real conectada — conecte em Integrações → Contas e credenciais');
+  return realLinkListings(actor, ch, acc);
+}
+
+/**
+ * Sincroniza estoque (e preço) dos anúncios — chamado pela automação em tempo real.
+ * Canal real: envia à API somente o que mudou (force = envia tudo); erro em um anúncio não interrompe o lote.
+ */
+export async function syncListings(actor: Actor, opts: { productIds?: string[]; channelId?: string; prices?: boolean; force?: boolean } = {}) {
   const channels = await prisma.salesChannel.findMany({ where: { companyId: actor.companyId, status: 'CONECTADO', ...(opts.channelId ? { id: opts.channelId } : {}) } });
   let updated = 0;
   for (const ch of channels) {
@@ -108,25 +146,44 @@ export async function syncListings(actor: Actor, opts: { productIds?: string[]; 
     const listings = await prisma.listing.findMany({ where: { channelId: ch.id, ...(opts.productIds ? { productId: { in: opts.productIds } } : {}), status: { not: 'ENCERRADO' } } });
     if (!listings.length) continue;
     const avail = await getAvailability(prisma, { orgId: actor.orgId, companyId: actor.companyId }, listings.map((l) => l.productId));
+    let acc = null;
+    try {
+      acc = await realAccountOf(ch);
+    } catch {
+      continue;
+    }
     const changes: string[] = [];
+    const errors: string[] = [];
     for (const l of listings) {
       const data: Record<string, unknown> = { lastSyncAt: new Date() };
+      const push: { stock?: number; price?: number } = {};
       if (ch.syncStock) {
         const stock = Math.max(0, avail.get(l.productId)?.available ?? 0);
         if (stock !== l.stock) changes.push(`${l.externalId}: estoque ${l.stock} → ${stock}`);
+        if (stock !== l.stock || opts.force) push.stock = stock;
         data.stock = stock;
         if (l.status !== 'PAUSADO') data.status = stock > 0 ? 'ATIVO' : 'SEM_ESTOQUE';
       }
       if (opts.prices && ch.syncPrice) {
         const price = await resolvePrice(prisma, l.productId, ch.priceListId);
         if (price !== l.price) changes.push(`${l.externalId}: preço ${l.price.toFixed(2)} → ${price.toFixed(2)}`);
+        if (price !== l.price || opts.force) push.price = price;
         data.price = price;
+      }
+      if (acc && (push.stock != null || push.price != null)) {
+        const err = await pushListing(ch, acc, l.externalId, push);
+        if (err) {
+          // Mantém o valor anterior: a próxima sincronização tenta de novo
+          errors.push(`${l.externalId}: ${err}`);
+          continue;
+        }
       }
       await prisma.listing.update({ where: { id: l.id }, data });
       updated++;
     }
     await prisma.salesChannel.update({ where: { id: ch.id }, data: { lastSyncAt: new Date() } });
-    if (changes.length) await log(ch.id, opts.prices ? 'PRECO' : 'ESTOQUE', `Sincronização: ${changes.length} alteração(ões) enviada(s) ao ${ch.name}`, { changes: changes.slice(0, 50) });
+    if (changes.length || (acc && opts.force)) await log(ch.id, opts.prices ? 'PRECO' : 'ESTOQUE', `Sincronização${acc ? '' : ' (simulada)'}: ${changes.length} alteração(ões) enviada(s) ao ${ch.name}${acc && opts.force ? ` · ${listings.length - errors.length} anúncio(s) confirmados na API` : ''}`, { changes: changes.slice(0, 50) });
+    if (errors.length) await log(ch.id, 'ERRO', `Falha ao enviar ${errors.length} anúncio(s) ao ${ch.name}`, { errors: errors.slice(0, 50) }, false);
   }
   return updated;
 }
@@ -173,6 +230,9 @@ export async function fakeBuyer(orgId: string) {
 export async function importOrders(actor: Actor, channelId: string, count = 3) {
   const ch = await prisma.salesChannel.findFirst({ where: { id: channelId, companyId: actor.companyId } });
   if (!ch || ch.status !== 'CONECTADO') throw new Error('Canal não conectado');
+  // Canal real: busca na API os pedidos novos/alterados (a quantidade é ignorada)
+  const acc = await realAccountOf(ch);
+  if (acc) return (await realImportOrders(actor, ch, acc)).created;
   const def = connector(ch.provider);
   const listings = await prisma.listing.findMany({ where: { channelId, status: 'ATIVO', stock: { gt: 0 } }, include: { product: true } });
   if (!listings.length) {
@@ -215,6 +275,8 @@ export async function simulationTick(actor: Actor) {
   const channels = await prisma.salesChannel.findMany({ where: { companyId: actor.companyId, status: 'CONECTADO', autoImport: true, category: { in: ['MARKETPLACE', 'ECOMMERCE', 'DELIVERY', 'SOCIAL'] } } });
   const created = [];
   for (const ch of channels) {
+    // Canais ligados a contas reais recebem pedidos por notificação/sincronização periódica
+    if (isRealChannel(ch) || (MARKETPLACE_PROVIDERS.includes(ch.provider) && (await getAccount(actor.companyId, ch.provider).catch(() => null)))) continue;
     if (Math.random() < 0.25) created.push(...(await importOrders(actor, ch.id, 1)));
   }
   return created;

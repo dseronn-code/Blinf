@@ -15,7 +15,8 @@
     "db:reset": "prisma migrate reset --force",
     "postinstall": "prisma generate",
     "test": "vitest run",
-    "test:db": "RUN_DB_TESTS=1 vitest run"
+    "test:db": "RUN_DB_TESTS=1 vitest run",
+    "test:e2e": "playwright test"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

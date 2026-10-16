@@ -4,8 +4,16 @@ import { fail } from '@/server/errors';
 import { round2, randomDigits, addDays } from '@/lib/utils';
 import { buildPixPayload } from '@/lib/br';
 import { defaultBankAccount } from '@/server/services/finance';
+import { paymentAccount, gatewayFor } from '@/server/services/payments';
 
-export const GET = route('financeiro', 'view', async ({ ctx }) => ({ rows: await prisma.paymentLink.findMany({ where: { companyId: ctx.companyId }, orderBy: { createdAt: 'desc' } }) }));
+export const GET = route('financeiro', 'view', async ({ ctx }) => {
+  // Provedor de cobrança conectado (Asaas/Mercado Pago) — null = cobranças simuladas
+  const acc = await paymentAccount(ctx.companyId);
+  return {
+    rows: await prisma.paymentLink.findMany({ where: { companyId: ctx.companyId }, orderBy: { createdAt: 'desc' } }),
+    gateway: acc ? { provider: acc.provider, name: gatewayFor(acc.provider)?.name || acc.provider, environment: acc.environment, accountName: acc.accountName, autoCharge: acc.settings.autoCharge !== false } : null,
+  };
+});
 
 /** Link de pagamento avulso (gera conta a receber vinculada) */
 export const POST = route('financeiro', 'edit', async ({ ctx, body }) => {

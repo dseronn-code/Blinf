@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#16a34a" />
+  <title>Sem conexão | GestãoPro</title>
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+  <style>
+    :root { color-scheme: light dark; --bg: #f8fafc; --card: #fff; --fg: #0f172a; --muted: #64748b; --primary: #16a34a; --border: #e2e8f0; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #0b1220; --card: #111827; --fg: #e5e7eb; --muted: #94a3b8; --border: #1f2937; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+    .card { max-width: 420px; width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 28px; text-align: center; }
+    .logo { width: 56px; height: 56px; border-radius: 14px; margin: 0 auto 16px; display: block; }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    p { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 16px; }
+    .actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    a, button { font: inherit; font-size: 14px; font-weight: 600; border-radius: 8px; padding: 9px 16px; cursor: pointer; text-decoration: none; }
+    button { background: var(--primary); color: #fff; border: 0; }
+    a { color: var(--fg); border: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <img class="logo" src="/icons/icon-192.png" alt="GestãoPro" />
+    <h1>Você está sem conexão</h1>
+    <p>Esta página ainda não foi aberta neste dispositivo e não está disponível offline. O PDV continua funcionando após a primeira visita: as vendas ficam na fila e são enviadas quando a internet voltar.</p>
+    <div class="actions">
+      <button onclick="location.reload()">Tentar novamente</button>
+      <a href="/pdv">Abrir o PDV</a>
+    </div>
+  </main>
+  <script>window.addEventListener('online', function () { location.reload(); });</script>
+</body>
+</html>

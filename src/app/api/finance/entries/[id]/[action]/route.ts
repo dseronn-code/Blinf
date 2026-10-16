@@ -5,6 +5,7 @@ import { randomDigits } from '@/lib/utils';
 import { payEntry, billingData, defaultBankAccount } from '@/server/services/finance';
 import { boletoPdf } from '@/server/pdf';
 import { buildPixPayload } from '@/lib/br';
+import { createCharge, cancelCharge, refundCharge, paymentAccount, type ChargeMethod } from '@/server/services/payments';
 
 export const POST = route('financeiro', 'edit', async ({ ctx, params, body }) => {
   const e = await prisma.financialEntry.findFirst({ where: { id: params.id, companyId: ctx.companyId } });
@@ -23,8 +24,22 @@ export const POST = route('financeiro', 'edit', async ({ ctx, params, body }) =>
     }
     case 'cancel':
       if (e!.paidAmount > 0) fail(400, 'Estorne a baixa antes de cancelar');
+      // Cancela também a cobrança registrada no provedor (boleto/Pix não fica pagável)
+      if (e!.provider) await cancelCharge(ctx.companyId, e!.id).catch(() => {});
       return prisma.financialEntry.update({ where: { id: e!.id }, data: { status: 'CANCELADO' } });
+    case 'charge': {
+      // Emite a cobrança no Asaas/Mercado Pago (ou a simulada, sem provedor conectado)
+      const method = (['PIX', 'BOLETO', 'CARTAO', 'UNDEFINED'].includes(body?.method) ? body.method : undefined) as ChargeMethod | undefined;
+      const r = await createCharge(ctx.companyId, e!.id, method);
+      return { ...r.entry, simulated: r.simulated, redirectUrl: 'redirectUrl' in r ? r.redirectUrl : null };
+    }
+    case 'cancel-charge':
+      if (!e!.provider) fail(400, 'O título não tem cobrança registrada em provedor');
+      return cancelCharge(ctx.companyId, e!.id);
+    case 'refund-charge':
+      return refundCharge(ctx.companyId, e!.id, body?.amount ? Number(body.amount) : undefined);
     case 'billing': {
+      if (await paymentAccount(ctx.companyId)) return (await createCharge(ctx.companyId, e!.id)).entry;
       // Gera (ou regenera) boleto + Pix para o título
       const company = await prisma.company.findUnique({ where: { id: ctx.companyId } });
       const bank = await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL');
@@ -47,6 +62,8 @@ export const GET = route('financeiro', 'view', async ({ ctx, params }) => {
   if (params.action !== 'boleto') fail(404, 'Ação inválida');
   let e = await prisma.financialEntry.findFirst({ where: { id: params.id, companyId: { in: ctx.companyIds } } });
   if (!e) fail(404, 'Lançamento não encontrado');
+  // Cobrança real: o boleto/fatura oficial fica no provedor
+  if (e!.provider && e!.paymentUrl) return Response.redirect(e!.paymentUrl, 302);
   const company = await prisma.company.findUnique({ where: { id: e!.companyId } });
   const bank = await defaultBankAccount(prisma, e!.companyId, 'CONTA_DIGITAL');
   if (!e!.boletoLine) e = await prisma.financialEntry.update({ where: { id: e!.id }, data: billingData(company!, bank!, e!.amount - e!.paidAmount, e!.dueDate) });

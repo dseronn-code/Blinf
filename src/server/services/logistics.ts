@@ -1,16 +1,26 @@
 /**
- * Logística (SIMULADA): cotação de frete Correios / Melhor Envio / GestãoPro
- * Envios, geração de etiqueta com código de rastreio no padrão UPU, eventos
- * de rastreamento e conferência de separação (picking/packing).
+ * Logística: cotação de frete, etiquetas e rastreio.
+ * - Real: Melhor Envio e Correios (contrato) quando a empresa conecta a conta
+ *   em Integrações → Contas (cotação, compra da etiqueta, PDF oficial, rastreio).
+ * - Simulado: sem conta conectada, fórmula própria, código UPU e eventos simulados.
  */
+import { PDFDocument } from 'pdf-lib';
+import type { Shipment, SalesOrder, Company } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { round2, onlyDigits, addDays } from '@/lib/utils';
 import { buildTrackingCode, cepRegion } from '@/lib/br';
 import { fail } from '../errors';
 import { emit } from '../events';
+import { getAccount } from '../integrations/accounts';
+import type { AccountCtx } from '../integrations/types';
+import { meQuote, meBuyLabel, meTracking, meStatus, meCancel, type ShipPurchase, type PurchaseResult } from '../integrations/providers/melhorenvio';
+import { correiosQuote, correiosBuyLabel, correiosTracking, correiosLabelPdf, correiosCancel, type TrackEvent } from '../integrations/providers/correios';
+import { shippingLabelPdf } from '../pdf';
 import type { Actor } from './sales';
 
-export type FreightOption = { provider: string; carrier: string; service: string; price: number; deadlineDays: number; simulated: true };
+export type FreightOption = { provider: string; carrier: string; service: string; price: number; deadlineDays: number; simulated: boolean; serviceId?: string };
+export type QuoteParams = { fromZip: string; toZip: string; weight: number; height?: number; width?: number; length?: number; value?: number };
+const REAL = ['MELHOR_ENVIO', 'CORREIOS'] as const;
 
 export function quoteFreight(p: { fromZip: string; toZip: string; weight: number; height?: number; width?: number; length?: number; value?: number }): FreightOption[] {
   const from = onlyDigits(p.fromZip || '01000000');
@@ -34,6 +44,38 @@ export function quoteFreight(p: { fromZip: string; toZip: string; weight: number
   return opts.map((o) => ({ ...o, deadlineDays: Math.round(o.deadlineDays) })).sort((a, b) => a.price - b.price);
 }
 
+// ---------------------------------------------------------------------------
+// Cotação real (contas conectadas) com queda para a simulação
+// ---------------------------------------------------------------------------
+async function realAccounts(companyId: string) {
+  const out: AccountCtx[] = [];
+  for (const p of REAL) {
+    const acc = await getAccount(companyId, p).catch(() => null);
+    if (acc) out.push(acc);
+  }
+  return out;
+}
+
+function quoteWith(acc: AccountCtx, p: QuoteParams) {
+  return acc.provider === 'MELHOR_ENVIO' ? meQuote(acc, p) : correiosQuote(acc, p);
+}
+
+/** Cotação detalhada: opções reais + erros por provedor (sem conta → simulação) */
+export async function quoteFreightDetailed(companyId: string, p: QuoteParams) {
+  const accounts = await realAccounts(companyId);
+  if (!accounts.length) return { real: false, options: quoteFreight(p), errors: [] as string[] };
+  const results = await Promise.allSettled(accounts.map((a) => quoteWith(a, p)));
+  const options: FreightOption[] = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])).filter((o) => o.price > 0);
+  const errors = results.flatMap((r) => (r.status === 'rejected' ? [(r.reason as Error).message] : []));
+  // Todas as contas falharam: mantém a operação com a cotação simulada
+  if (!options.length) return { real: false, options: quoteFreight(p), errors };
+  return { real: true, options: options.sort((a, b) => a.price - b.price), errors };
+}
+
+export async function quoteFreightFor(companyId: string, p: QuoteParams): Promise<FreightOption[]> {
+  return (await quoteFreightDetailed(companyId, p)).options;
+}
+
 /** Peso/dimensões do pedido a partir dos produtos */
 export async function orderPackage(orderId: string) {
   const order = await prisma.salesOrder.findUnique({ where: { id: orderId }, include: { items: true } });
@@ -53,7 +95,9 @@ export async function orderPackage(orderId: string) {
   return { order: order!, weight: round2(Math.max(weight, 0.1)), height, width, length };
 }
 
-export async function createShipment(actor: Actor, orderId: string, choice?: { provider: string; carrier: string; service: string } | null) {
+export type FreightChoice = { provider: string; carrier?: string; service: string; serviceId?: string } | null;
+
+export async function createShipment(actor: Actor, orderId: string, choice?: FreightChoice) {
   const existing = await prisma.shipment.findFirst({ where: { salesOrderId: orderId, status: { not: 'CANCELADO' } } });
   if (existing) return existing;
   const { order, ...pkg } = await orderPackage(orderId);
@@ -62,11 +106,21 @@ export async function createShipment(actor: Actor, orderId: string, choice?: { p
   if (!order.items.some((i) => i.productId)) return null;
   const company = await prisma.company.findUnique({ where: { id: actor.companyId } });
   const shipTo = (order.shipTo || {}) as { zip?: string };
-  const options = quoteFreight({ fromZip: company?.zip || '01000000', toZip: shipTo.zip || '01000000', ...pkg, value: order.total });
+  const options = await quoteFreightFor(actor.companyId, { fromZip: company?.zip || '01000000', toZip: shipTo.zip || '01000000', ...pkg, value: order.total });
   const preferred =
-    (choice && options.find((o) => o.provider === choice.provider && o.service === choice.service)) ||
+    (choice && options.find((o) => o.provider === choice.provider && (choice.serviceId ? o.serviceId === choice.serviceId : o.service === choice.service))) ||
     (order.shippingService && options.find((o) => o.service.startsWith(order.shippingService!))) ||
     options[0];
+  if (!preferred.simulated) {
+    // Etiqueta real: compra na hora quando escolhida pelo usuário ou com "comprar automaticamente" ligado
+    const acc = await getAccount(actor.companyId, preferred.provider);
+    const shipment = await prisma.shipment.create({
+      data: { companyId: actor.companyId, salesOrderId: orderId, provider: preferred.provider, carrier: preferred.carrier, service: preferred.service, price: preferred.price, deadlineDays: preferred.deadlineDays, ...pkg, status: 'PENDENTE', events: [{ date: new Date().toISOString(), status: 'PENDENTE', description: `Frete cotado em ${preferred.carrier} ${preferred.service} — aguardando compra da etiqueta`, location: company?.city || '' }] },
+    });
+    await prisma.salesOrder.update({ where: { id: orderId }, data: { carrier: preferred.carrier, shippingService: preferred.service } });
+    if (choice || acc?.settings.autoBuy) return buyShipmentLabel(actor, shipment.id, preferred.serviceId);
+    return shipment;
+  }
   const prefix = preferred.carrier === 'Correios' ? (preferred.service.startsWith('SEDEX') ? 'QB' : 'PN') : preferred.carrier.slice(0, 2).toUpperCase().replace(/[^A-Z]/g, 'X');
   const trackingCode = preferred.carrier === 'Correios' ? buildTrackingCode(prefix) : `${prefix}${Date.now().toString().slice(-10)}`;
   const shipment = await prisma.shipment.create({
@@ -90,17 +144,145 @@ export async function createShipment(actor: Actor, orderId: string, choice?: { p
   return shipment;
 }
 
+/** Dados da compra (remetente = empresa, destinatário = entrega do pedido, NF-e autorizada) */
+async function purchaseData(s: Shipment, serviceId: string): Promise<ShipPurchase> {
+  const order = await prisma.salesOrder.findUnique({ where: { id: s.salesOrderId }, include: { items: true, customer: true } });
+  const company = await prisma.company.findUnique({ where: { id: s.companyId } });
+  const inv = await prisma.invoice.findFirst({ where: { salesOrderId: s.salesOrderId, model: 'NFE', status: 'AUTORIZADA' }, orderBy: { issueDate: 'desc' } });
+  const to = (order!.shipTo || {}) as Record<string, string | null>;
+  const c = order!.customer;
+  return {
+    serviceId,
+    from: { name: company!.tradeName || company!.name, phone: company!.phone, email: company!.email, document: company!.cnpj, ie: company!.ie, street: company!.street, number: company!.number, district: company!.district, city: company!.city, uf: company!.uf, zip: company!.zip },
+    to: { name: to.name || c.name, phone: c.mobile || c.phone, email: c.email, document: c.document, ie: c.ie, street: to.street || c.street, number: to.number || c.number, complement: to.complement || c.complement, district: to.district || c.district, city: to.city || c.city, uf: to.uf || c.uf, zip: to.zip || c.zip },
+    products: order!.items.filter((i) => i.productId).map((i) => ({ name: i.description, quantity: i.quantity, unitValue: i.unitPrice })),
+    volume: { weight: s.weight, height: s.height, width: s.width, length: s.length },
+    value: order!.total,
+    invoiceKey: inv?.accessKey || null,
+    invoiceNumber: inv?.number || null,
+    orderNumber: order!.number,
+  };
+}
+
+/** Compra a etiqueta no provedor real (Melhor Envio: carrinho → checkout → gerar → imprimir; Correios: pré-postagem + rótulo) */
+export async function buyShipmentLabel(actor: Actor, shipmentId: string, serviceId?: string) {
+  const s = await prisma.shipment.findFirst({ where: { id: shipmentId, companyId: actor.companyId } });
+  if (!s) fail(404, 'Envio não encontrado');
+  if (s!.providerRef) return s!;
+  const acc = await getAccount(actor.companyId, s!.provider);
+  if (!acc) fail(400, `Conta ${s!.provider === 'CORREIOS' ? 'dos Correios' : 'do Melhor Envio'} não conectada (Integrações → Contas)`);
+  const events = (s!.events as object[]) || [];
+  try {
+    if (!serviceId) {
+      // Reencontra o serviço cotado (o id do serviço não é guardado no envio)
+      const opts = await quoteWith(acc!, { fromZip: (await prisma.company.findUnique({ where: { id: s!.companyId } }))?.zip || '', toZip: String(((await prisma.salesOrder.findUnique({ where: { id: s!.salesOrderId } }))?.shipTo as any)?.zip || ''), weight: s!.weight, height: s!.height, width: s!.width, length: s!.length });
+      serviceId = opts.find((o) => o.carrier === s!.carrier && o.service === s!.service)?.serviceId;
+      if (!serviceId) fail(400, `Serviço ${s!.carrier} ${s!.service} indisponível para este destino — cancele e gere novamente`);
+    }
+    const data = await purchaseData(s!, serviceId!);
+    const r: PurchaseResult = acc!.provider === 'MELHOR_ENVIO' ? await meBuyLabel(acc!, data) : await correiosBuyLabel(acc!, data);
+    const updated = await prisma.shipment.update({
+      where: { id: s!.id },
+      data: { providerRef: r.providerRef, trackingCode: r.trackingCode, labelUrl: r.labelUrl, ...(r.price ? { price: r.price } : {}), status: 'ETIQUETA_GERADA', labelAt: new Date(), events: [...events, { date: new Date().toISOString(), status: 'ETIQUETA_GERADA', description: `Etiqueta comprada em ${acc!.provider === 'CORREIOS' ? 'Correios (pré-postagem)' : 'Melhor Envio'} — aguardando postagem`, location: '' }] },
+    });
+    await emit('shipment.label_created', { ...actor, shipmentId: s!.id, orderId: s!.salesOrderId });
+    return updated;
+  } catch (e) {
+    await prisma.shipment.update({ where: { id: s!.id }, data: { events: [...events, { date: new Date().toISOString(), status: 'PENDENTE', description: `Falha ao comprar etiqueta: ${(e as Error).message}`, location: '' }] } });
+    throw e;
+  }
+}
+
+/** Cancela o envio (e a etiqueta no provedor real, antes da postagem) */
+export async function cancelShipment(actor: Actor, shipmentId: string) {
+  const s = await prisma.shipment.findFirst({ where: { id: shipmentId, companyId: actor.companyId } });
+  if (!s) fail(404, 'Envio não encontrado');
+  if (!['PENDENTE', 'ETIQUETA_GERADA'].includes(s!.status)) fail(400, 'Envio já postado não pode ser cancelado');
+  if (s!.providerRef) {
+    const acc = await getAccount(actor.companyId, s!.provider);
+    if (acc?.provider === 'MELHOR_ENVIO') await meCancel(acc, s!.providerRef);
+    else if (acc?.provider === 'CORREIOS') await correiosCancel(acc, s!.providerRef);
+  }
+  const events = [...((s!.events as object[]) || []), { date: new Date().toISOString(), status: 'CANCELADO', description: s!.providerRef ? 'Etiqueta cancelada no provedor' : 'Envio cancelado', location: '' }];
+  return prisma.shipment.update({ where: { id: s!.id }, data: { status: 'CANCELADO', events } });
+}
+
 const TRACK_FLOW = [
   { status: 'POSTADO', description: 'Objeto postado' },
   { status: 'EM_TRANSITO', description: 'Objeto em trânsito - por favor aguarde' },
   { status: 'SAIU_PARA_ENTREGA', description: 'Objeto saiu para entrega ao destinatário' },
   { status: 'ENTREGUE', description: 'Objeto entregue ao destinatário' },
 ];
+const RANK = ['PENDENTE', 'ETIQUETA_GERADA', 'POSTADO', 'EM_TRANSITO', 'SAIU_PARA_ENTREGA', 'ENTREGUE'];
+const ACTIVE = ['ETIQUETA_GERADA', 'POSTADO', 'EM_TRANSITO', 'SAIU_PARA_ENTREGA'];
 
-/** Avança o rastreio para o próximo status (simulação dos eventos da transportadora) */
+/**
+ * Aplica o rastreio do provedor ao envio: junta os eventos, avança o status
+ * (nunca regride) e dispara shipment.posted / shipment.delivered.
+ */
+async function applyTracking(s: Shipment, upd: { status: string | null; trackingCode?: string | null; events?: TrackEvent[] }) {
+  const old = (s.events as TrackEvent[]) || [];
+  const seen = new Set(old.map((e) => `${e.date}|${e.description}`));
+  const events = [...old, ...(upd.events || []).filter((e) => !seen.has(`${e.date}|${e.description}`))].sort((a, b) => a.date.localeCompare(b.date));
+  let status = s.status;
+  if (upd.status === 'CANCELADO') status = 'CANCELADO';
+  else if (upd.status && RANK.indexOf(upd.status) > RANK.indexOf(s.status)) status = upd.status;
+  if (status !== s.status && !upd.events?.length) events.push({ date: new Date().toISOString(), status, description: TRACK_FLOW.find((t) => t.status === status)?.description || status, location: '' });
+  const crossed = (st: string) => RANK.indexOf(s.status) < RANK.indexOf(st) && RANK.indexOf(status) >= RANK.indexOf(st);
+  const updated = await prisma.shipment.update({
+    where: { id: s.id },
+    data: { status, events, ...(upd.trackingCode && upd.trackingCode !== s.trackingCode ? { trackingCode: upd.trackingCode } : {}), ...(crossed('POSTADO') ? { postedAt: new Date() } : {}), ...(crossed('ENTREGUE') ? { deliveredAt: new Date() } : {}) },
+  });
+  if (crossed('POSTADO') || crossed('ENTREGUE')) {
+    const company = await prisma.company.findUnique({ where: { id: s.companyId }, select: { organizationId: true } });
+    const actor = { companyId: s.companyId, orgId: company!.organizationId, userName: 'Rastreio automático' };
+    if (crossed('POSTADO')) await emit('shipment.posted', { ...actor, shipmentId: s.id, orderId: s.salesOrderId });
+    if (crossed('ENTREGUE')) await emit('shipment.delivered', { ...actor, shipmentId: s.id, orderId: s.salesOrderId });
+  }
+  return updated;
+}
+
+/** Notificação (webhook) de um provedor real para o envio identificado por providerRef */
+export async function applyProviderTracking(companyId: string, provider: string, providerRef: string, upd: { status: string | null; trackingCode?: string | null; events?: TrackEvent[] }) {
+  const s = await prisma.shipment.findFirst({ where: { companyId, provider, providerRef } });
+  if (!s) return `Envio ${providerRef} não encontrado`;
+  const u = await applyTracking(s, upd);
+  return `Envio ${u.trackingCode || providerRef}: ${u.status}`;
+}
+
+/** Busca o rastreio no provedor real para os envios informados */
+async function refreshReal(acc: AccountCtx, list: Shipment[]) {
+  if (!list.length) return [];
+  if (acc.provider === 'MELHOR_ENVIO') {
+    const tr = await meTracking(acc, list.map((s) => s.providerRef!));
+    return Promise.all(list.map((s) => (tr[s.providerRef!] ? applyTracking(s, { status: meStatus(tr[s.providerRef!].status), trackingCode: tr[s.providerRef!].tracking }) : s)));
+  }
+  const out: Shipment[] = [];
+  for (const s of list) out.push(s.trackingCode ? await applyTracking(s, await correiosTracking(acc, s.trackingCode)) : s);
+  return out;
+}
+
+/** Rotina de rastreio (a cada 30 min pelo agendador das integrações) */
+export async function syncProviderTracking(companyId: string, provider: string) {
+  const acc = await getAccount(companyId, provider);
+  if (!acc) return 'Conta não conectada';
+  const list = await prisma.shipment.findMany({ where: { companyId, provider, providerRef: { not: null }, status: { in: ACTIVE } }, take: 100 });
+  const before = new Map(list.map((s) => [s.id, s.status]));
+  const after = await refreshReal(acc, list);
+  const changed = after.filter((s) => before.get(s.id) !== s.status).length;
+  return `${list.length} envio(s) consultado(s), ${changed} atualizado(s)`;
+}
+
+/** Atualiza o rastreio: provedor real quando a etiqueta foi comprada nele; senão avança a simulação */
 export async function advanceTracking(actor: Actor, shipmentId: string) {
   const s = await prisma.shipment.findFirst({ where: { id: shipmentId, companyId: actor.companyId }, include: { salesOrder: true } });
   if (!s) fail(404, 'Envio não encontrado');
+  if ((REAL as readonly string[]).includes(s!.provider) && (s!.providerRef || s!.status === 'PENDENTE')) {
+    if (s!.status === 'PENDENTE') return buyShipmentLabel(actor, s!.id);
+    const acc = await getAccount(actor.companyId, s!.provider);
+    if (!acc) fail(400, 'Conta do provedor não conectada (Integrações → Contas)');
+    return (await refreshReal(acc!, [s!]))[0];
+  }
   const order = ['ETIQUETA_GERADA', ...TRACK_FLOW.map((t) => t.status)];
   const idx = order.indexOf(s!.status);
   if (idx < 0 || idx >= order.length - 1) return s;
@@ -117,6 +299,39 @@ export async function advanceTracking(actor: Actor, shipmentId: string) {
   return updated;
 }
 
+// ---------------------------------------------------------------------------
+// Etiquetas: PDF oficial do provedor (proxy) ou etiqueta simulada 10x15
+// ---------------------------------------------------------------------------
+async function providerLabel(s: Shipment): Promise<Uint8Array> {
+  const acc = await getAccount(s.companyId, s.provider);
+  if (s.labelUrl!.startsWith('correios:')) {
+    if (!acc) fail(400, 'Conta dos Correios não conectada');
+    return correiosLabelPdf(acc!, s.labelUrl!);
+  }
+  const t = acc?.secrets.token || acc?.secrets.accessToken;
+  const r = await fetch(s.labelUrl!, { headers: t ? { Authorization: `Bearer ${t}`, 'User-Agent': `GestaoPro (${acc?.settings.email || 'contato@gestaopro.com.br'})` } : {} });
+  if (!r.ok) fail(502, `Não foi possível baixar a etiqueta ${s.trackingCode || ''} do provedor (HTTP ${r.status})`);
+  const buf = new Uint8Array(await r.arrayBuffer());
+  if (String.fromCharCode(...buf.slice(0, 4)) !== '%PDF') fail(502, `Etiqueta ${s.trackingCode || ''}: o provedor não devolveu um PDF`);
+  return buf;
+}
+
+/** Junta as etiquetas oficiais (PDF do provedor) com as simuladas em um único PDF */
+export async function labelsPdf(list: { shipment: Shipment; order: SalesOrder & { customer: { name: string } }; company: Company }[]) {
+  const sim = list.filter((x) => !x.shipment.labelUrl);
+  const real = list.filter((x) => x.shipment.labelUrl);
+  if (!real.length) return shippingLabelPdf(sim);
+  const out = await PDFDocument.create();
+  for (const x of real) {
+    const src = await PDFDocument.load(await providerLabel(x.shipment));
+    for (const pg of await out.copyPages(src, src.getPageIndices())) out.addPage(pg);
+  }
+  if (sim.length) {
+    const src = await PDFDocument.load(await shippingLabelPdf(sim));
+    for (const pg of await out.copyPages(src, src.getPageIndices())) out.addPage(pg);
+  }
+  return out.save();
+}
 export function estimatedDelivery(s: { postedAt: Date | null; labelAt: Date | null; deadlineDays: number }) {
   return addDays(s.postedAt || s.labelAt || new Date(), s.deadlineDays);
 }

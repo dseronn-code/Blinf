@@ -20,7 +20,7 @@ export function roundMoney<T>(data: T, depth = 0): T {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
     if (typeof v === 'number' && isMoneyField(k)) out[k] = r2(v);
-    else if (v && typeof v === 'object' && isMoneyField(k) && !Array.isArray(v)) {
+    else if (v && typeof v === 'object' && isMoneyField(k) && !Array.isArray(v) && !(v instanceof Date)) {
       // { increment: 1.005 } / { set: 2.999 }
       out[k] = Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([op, x]) => [op, typeof x === 'number' ? r2(x) : x]));
     } else if (v && typeof v === 'object') out[k] = roundMoney(v, depth + 1);

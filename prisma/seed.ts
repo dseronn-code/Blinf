@@ -590,6 +590,43 @@ async function main() {
   }
   log('Cupons, imagens, devolução, inventários, transferência entre empresas, manifestação e orçamento');
 
+  // ---------------- Contratos (cobrança recorrente) e acesso do contador ----------------
+  {
+    const pj = (doc: string) => prisma.contact.findFirst({ where: { organizationId: org.id, document: doc } });
+    const svc = (code: string) => prisma.service.findFirst({ where: { organizationId: org.id, code } });
+    const [exato, bemEstar, ponto] = await Promise.all([pj('13347016000117'), pj('05570714000159'), pj('09358105000191')]);
+    const [manut, prev, inst] = await Promise.all([svc('SRV-MANUT'), svc('SRV-PREV'), svc('SRV-INST')]);
+    const ago = (months: number) => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth() - months, 1); };
+    const demo = [
+      { customer: exato!, description: 'Suporte de TI mensal — 10 estações', interval: 'MENSAL', billingDay: 10, start: ago(3), adjustPercent: 4.5, paymentMethod: 'BOLETO', invoiceModel: 'NFSE',
+        items: [{ kind: 'SERVICO' as const, serviceId: manut!.id, description: 'Suporte técnico mensal (horas inclusas)', quantity: 1, unitPrice: 890 }, { kind: 'SERVICO' as const, serviceId: prev!.id, description: 'Manutenção preventiva das estações', quantity: 10, unitPrice: 35 }] },
+      { customer: bemEstar!, description: 'Manutenção preventiva trimestral — equipamentos da clínica', interval: 'TRIMESTRAL', billingDay: 31, start: ago(4), adjustPercent: 5, paymentMethod: 'PIX', invoiceModel: 'NFSE',
+        items: [{ kind: 'SERVICO' as const, serviceId: prev!.id, description: 'Manutenção preventiva (limpeza) — por equipamento', quantity: 18, unitPrice: 85 }] },
+      { customer: ponto!, description: 'Monitoramento e backup em nuvem', interval: 'MENSAL', billingDay: 5, start: ago(2), adjustPercent: 0, paymentMethod: 'BOLETO', invoiceModel: 'NFSE',
+        items: [{ kind: 'SERVICO' as const, serviceId: inst!.id, description: 'Monitoramento remoto e backup gerenciado', quantity: 1, unitPrice: 420 }] },
+    ];
+    const { saveContract, billDueContracts } = await import('../src/server/services/contracts');
+    for (const d of demo) {
+      if (!d.customer) continue;
+      const c = await saveContract(actorTech, { customerId: d.customer.id, description: d.description, items: d.items, interval: d.interval, billingDay: d.billingDay, startDate: d.start, adjustPercent: d.adjustPercent, paymentMethod: d.paymentMethod, invoiceModel: d.invoiceModel, sellerId: sellers[1].id });
+      await prisma.contract.update({ where: { id: c.id }, data: { createdAt: d.start } });
+    }
+    // Fatura os períodos já vencidos (histórico) e quita as cobranças anteriores ao mês corrente
+    await billDueContracts(actorTech, { aheadDays: 0 }).catch((e) => log('faturamento de contratos ignorado:', e.message));
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    for (const b of await prisma.contractBilling.findMany({ where: { contract: { companyId: tech.id }, entryId: { not: null } }, include: { contract: true } })) {
+      const [y, m] = b.period.split('-').map(Number);
+      const due = new Date(y, m - 1, Math.min(b.contract.billingDay, new Date(y, m, 0).getDate()));
+      await prisma.financialEntry.update({ where: { id: b.entryId! }, data: { dueDate: due, competenceDate: due } });
+      await prisma.contractBilling.update({ where: { id: b.id }, data: { createdAt: addDays(due, -3) } });
+      if (b.invoiceId) await prisma.invoice.update({ where: { id: b.invoiceId }, data: { issueDate: addDays(due, -3), authorizedAt: addDays(due, -3) } });
+      if (due < monthStart) await payEntry(tech.id, org.id, b.entryId!, { date: addDays(due, randomInt(-2, 3)) }).catch(() => {});
+    }
+    const contador = await prisma.user.create({ data: { organizationId: org.id, roleId: roles['Contador'], name: 'Carla Contadora (Exato Contabilidade)', email: 'contador@gestaopro.com.br', passwordHash: pass } });
+    await prisma.userCompany.createMany({ data: [{ userId: contador.id, companyId: moda.id }, { userId: contador.id, companyId: tech.id }] });
+    log('Contratos recorrentes na TechCasa e usuário contador@gestaopro.com.br / demo123 (perfil Contador)');
+  }
+
   await prisma.notification.createMany({ data: [
     { companyId: moda.id, title: 'Bem-vindo ao GestãoPro!', message: 'Este é um ambiente de demonstração com dados fictícios. Integrações externas são simuladas.', level: 'success', link: '/' },
     { companyId: moda.id, title: 'NF-e de entrada disponível', message: 'Há um XML de fornecedor aguardando lançamento.', level: 'info', link: '/compras/xml' },

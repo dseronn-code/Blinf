@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { route } from '@/server/http';
 import { fail } from '@/server/errors';
-import { sendMessage } from '@/server/services/messaging';
+import { sendTemplate, hasRealEmail } from '@/server/services/messaging';
 
 /** Convida um usuário por e-mail: cria o acesso sem senha e envia link para definir a senha (72 h) */
 export const POST = route('configuracoes', 'edit', async ({ ctx, body, req }) => {
@@ -22,6 +22,6 @@ export const POST = route('configuracoes', 'edit', async ({ ctx, body, req }) =>
     },
   });
   const link = `${process.env.NEXTAUTH_URL || new URL(req.url).origin}/redefinir-senha?token=${token}&convite=1`;
-  await sendMessage(ctx.companyId, { to: email, subject: `${ctx.userName} convidou você para o GestãoPro`, body: `Olá, ${body.name}!\n\nVocê foi convidado(a) para acessar o GestãoPro com o perfil "${role!.name}".\nDefina sua senha em:\n${link}\n\nO convite expira em 72 horas.`, related: `user:${user.id}` });
-  return { ok: true, id: user.id, devLink: process.env.SMTP_HOST ? undefined : link };
+  await sendTemplate(ctx.companyId, 'convite_usuario', { cliente: body.name, perfil: role!.name, link, mensagem: `${ctx.userName} enviou este convite.` }, { to: email, related: `user:${user.id}` });
+  return { ok: true, id: user.id, devLink: (await hasRealEmail(ctx.companyId)) ? undefined : link };
 });

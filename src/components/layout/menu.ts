@@ -46,6 +46,7 @@ export const MENU: MenuGroup[] = [
       { label: 'Vendas multicanal', href: '/vendas/multicanal' },
       { label: 'Gestão de anúncios', href: '/vendas/anuncios' },
       { label: 'Devoluções e trocas', href: '/vendas/devolucoes' },
+      { label: 'Contratos (recorrência)', href: '/vendas/contratos' },
       { label: 'Comissões', href: '/vendas/comissoes' },
     ],
   },

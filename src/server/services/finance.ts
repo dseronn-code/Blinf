@@ -88,6 +88,10 @@ export async function createEntries(db: Db, input: CreateEntriesInput) {
     }
     created.push(await db.financialEntry.create({ data }));
   }
+  // Com Asaas/Mercado Pago conectado, a cobrança real é registrada pela fila (fora da transação)
+  if (input.type === 'RECEBER' && created.length && (input.paymentMethod === 'BOLETO' || input.paymentMethod === 'PIX')) {
+    await (await import('./payments')).queueAutoCharge(input.companyId, created.map((c) => c.id));
+  }
   return created;
 }
 

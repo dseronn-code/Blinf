@@ -9,9 +9,12 @@ import { isValidCPF, isValidCNPJ, buildPixPayload } from '@/lib/br';
 import { fail } from '../errors';
 import { getAvailability } from './stock';
 import { resolvePrice, createOrder } from './sales';
-import { quoteFreight } from './logistics';
+import { quoteFreightFor } from './logistics';
 import { defaultBankAccount } from './finance';
 import { evaluateCoupon } from './operations';
+import { paymentAccount, createCharge } from './payments';
+import { notify } from './notify';
+import { appUrl } from '../integrations/accounts';
 
 export async function storeBySlug(slug: string) {
   const store = await prisma.store.findUnique({ where: { slug } });
@@ -47,7 +50,8 @@ export async function storeFreight(slug: string, zip: string, items: { productId
   const products = await prisma.product.findMany({ where: { id: { in: items.map((i) => i.productId) } } });
   const weight = items.reduce((a, i) => a + (products.find((p) => p.id === i.productId)?.weight || 0.3) * i.quantity, 0);
   const subtotal = (await Promise.all(items.map(async (i) => (await resolvePrice(prisma, i.productId, store.priceListId)) * i.quantity))).reduce((a, b) => a + b, 0);
-  const options = quoteFreight({ fromZip: company.zip || '', toZip: zip, weight, value: subtotal }).filter((o) => ['PAC', 'SEDEX', '.Package', 'Loggi Express'].some((s) => o.service.startsWith(s)) && o.provider !== 'GESTAO_ENVIOS');
+  // Frete real (Melhor Envio/Correios conectados) ou simulado; na simulação, só os serviços mais comuns
+  const options = (await quoteFreightFor(company.id, { fromZip: company.zip || '', toZip: zip, weight, value: subtotal })).filter((o) => !o.simulated || (['PAC', 'SEDEX', '.Package', 'Loggi Express'].some((s) => o.service.startsWith(s)) && o.provider !== 'GESTAO_ENVIOS'));
   const free = (store.freeShippingAbove > 0 && subtotal >= store.freeShippingAbove) || (!!uf && store.freeShippingUfs.includes(uf.toUpperCase()));
   return options.map((o, i) => ({ ...o, price: free && i === 0 ? 0 : o.price, free: free && i === 0 }));
 }
@@ -89,26 +93,45 @@ export async function storeCheckout(slug: string, input: CheckoutInput) {
   const options = await storeFreight(slug, addr.zip, input.items, addr.uf);
   const chosen = options.find((o) => o.service === input.shipping?.service) || options[0];
   const freight = coupon?.freeShipping ? 0 : round2(chosen?.price || 0);
+  // Asaas/Mercado Pago conectado: Pix, boleto e cartão são cobrados de verdade; sem provedor, cartão é aprovado na hora (simulado)
+  const gateway = await paymentAccount(company.id);
+  const cardNow = input.paymentMethod === 'CARTAO_CREDITO' && !gateway;
   const order = await createOrder(actor, {
     customerId: contact.id, origin: 'LOJA', externalId: `LV-${randomDigits(6)}`, items, discount, freight, shippingService: chosen?.service,
     paymentMethod: input.paymentMethod, installments: input.paymentMethod === 'CARTAO_CREDITO' ? input.installments || 1 : 1, paymentTermDays: input.paymentMethod === 'BOLETO' ? 3 : 0,
-    // Cartão é aprovado na hora (gateway simulado); Pix/boleto aguardam pagamento
-    paidOnCreate: input.paymentMethod === 'CARTAO_CREDITO', warehouseId: store.warehouseId, shipTo: { name: c.name, ...addr }, notes: 'Pedido da loja virtual',
+    // Cartão simulado é aprovado na hora; Pix/boleto (e cartão real) aguardam pagamento
+    paidOnCreate: cardNow, warehouseId: store.warehouseId, shipTo: { name: c.name, ...addr }, notes: 'Pedido da loja virtual',
   });
   if (coupon) {
     await prisma.coupon.update({ where: { id: coupon.coupon.id }, data: { uses: { increment: 1 } } });
     await prisma.salesOrder.update({ where: { id: order.id }, data: { couponCode: coupon.coupon.code } });
   }
-  // Recebível + link de pagamento para Pix/boleto (o pagamento simulado baixa a conta)
-  let payment: Record<string, unknown> = { method: input.paymentMethod, status: input.paymentMethod === 'CARTAO_CREDITO' ? 'APROVADO' : 'AGUARDANDO' };
-  if (input.paymentMethod !== 'CARTAO_CREDITO') {
+  // Recebível + link de pagamento (o pagamento — real via webhook ou simulado — baixa a conta)
+  let payment: Record<string, unknown> = { method: input.paymentMethod, status: cardNow ? 'APROVADO' : 'AGUARDANDO' };
+  if (!cardNow) {
     const bank = await defaultBankAccount(prisma, company.id, 'CONTA_DIGITAL');
     const entry = await prisma.financialEntry.create({ data: { companyId: company.id, type: 'RECEBER', description: `Loja virtual - pedido nº ${order.number}`, contactId: contact.id, contactName: contact.name, dueDate: addDays(new Date(), input.paymentMethod === 'BOLETO' ? 3 : 1), amount: order.total, origin: 'LOJA', originId: order.id, paymentMethod: input.paymentMethod, chartAccountId: (await prisma.chartAccount.findFirst({ where: { companyId: company.id, code: '1.1.03' } }))?.id, documentNumber: String(order.number) } });
     await prisma.salesOrder.update({ where: { id: order.id }, data: { financialPosted: true } });
     const slugLink = `pg${randomDigits(10)}`;
-    const pix = buildPixPayload({ key: bank?.pixKey || company.cnpj, name: company.tradeName || company.name, city: company.city || 'SAO PAULO', amount: order.total, txid: slugLink });
-    await prisma.paymentLink.create({ data: { companyId: company.id, slug: slugLink, description: `Pedido ${order.number} - ${store.name}`, amount: order.total, methods: input.paymentMethod === 'PIX' ? 'PIX' : 'BOLETO', entryId: entry.id, salesOrderId: order.id, customerName: contact.name, pixPayload: pix, expiresAt: entry.dueDate } });
-    payment = { ...payment, link: `/pagar/${slugLink}`, pix, entryId: entry.id };
+    let pix = buildPixPayload({ key: bank?.pixKey || company.cnpj, name: company.tradeName || company.name, city: company.city || 'SAO PAULO', amount: order.total, txid: slugLink });
+    const method = input.paymentMethod === 'PIX' ? 'PIX' : input.paymentMethod === 'BOLETO' ? 'BOLETO' : 'CARTAO';
+    const link = await prisma.paymentLink.create({ data: { companyId: company.id, slug: slugLink, description: `Pedido ${order.number} - ${store.name}`, amount: order.total, methods: method, entryId: entry.id, salesOrderId: order.id, customerName: contact.name, pixPayload: pix, expiresAt: entry.dueDate } });
+    payment = { ...payment, link: `/pagar/${slugLink}`, pix, entryId: entry.id, simulated: !gateway };
+    if (gateway) {
+      try {
+        const r = await createCharge(company.id, entry.id, method, { backUrl: `${appUrl()}/pagar/${slugLink}` });
+        if (r.entry.pixPayload) {
+          pix = r.entry.pixPayload;
+          await prisma.paymentLink.update({ where: { id: link.id }, data: { pixPayload: pix } });
+        }
+        const redirectUrl = 'redirectUrl' in r ? r.redirectUrl : null;
+        payment = { ...payment, pix, provider: r.entry.provider, boletoLine: r.entry.boletoLine, paymentUrl: r.entry.paymentUrl, redirectUrl, ...(method === 'CARTAO' && redirectUrl ? { link: redirectUrl } : {}) };
+      } catch (e) {
+        // Falha no provedor não perde o pedido: segue com a cobrança simulada e avisa a empresa
+        payment = { ...payment, simulated: true };
+        await notify(company.id, 'Falha ao emitir cobrança da loja', `Pedido ${order.number}: ${(e as Error).message}. Cobrança simulada mantida.`, { level: 'error', link: '/financeiro/cobrancas' });
+      }
+    }
   }
   return { order: { id: order.id, number: order.number, total: order.total, externalId: order.externalId }, payment };
 }

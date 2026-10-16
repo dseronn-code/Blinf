@@ -7,3 +7,5 @@ out
 next-env.d.ts
 uploads
 backups
+test-results
+playwright-report

@@ -48,4 +48,10 @@ export const DEFAULT_ROLES: { name: string; description: string; isAdmin?: boole
     description: 'Estoque, compras, recebimento, produção e expedição',
     permissions: { dashboard: 'view', cadastros: 'view', estoque: 'edit', compras: 'edit', producao: 'edit', logistica: 'edit', vendas: 'view' },
   },
+  {
+    // Acesso do contador (escritório de contabilidade): somente consulta — notas/XML, arquivos SPED/Sintegra, financeiro, relatórios e estoque
+    name: 'Contador',
+    description: 'Contabilidade externa: consulta notas, XML, arquivos fiscais, financeiro, relatórios e estoque (sem editar)',
+    permissions: { dashboard: 'view', cadastros: 'view', fiscal: 'view', financeiro: 'view', relatorios: 'view', estoque: 'view', compras: 'view' },
+  },
 ];

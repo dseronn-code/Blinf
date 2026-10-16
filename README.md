@@ -146,6 +146,43 @@ Endpoints: `products` (GET, POST, GET/PATCH `/{sku}`), `stock` (GET, POST), `ord
 
 ---
 
+## 📱 App instalável (PWA)
+
+O GestãoPro pode ser instalado como aplicativo (Chrome/Edge no computador, Android e iOS via "Adicionar à Tela de Início"). O botão **Instalar app** aparece no canto da tela quando o navegador permite.
+
+- `public/manifest.webmanifest` (nome, ícones 192/512 e *maskable*, atalhos para PDV, novo pedido e contas a receber) e `public/sw.js` (service worker).
+- Assets estáticos (`/_next/static`, ícones) em *stale-while-revalidate*; navegação com rede primeiro e cópia em cache; sem rede, abre a última versão da página ou `/offline.html`.
+- A API não é cacheada, exceto `GET /api/me` e `GET /api/pdv` — assim o **PDV abre offline** depois da primeira visita e as vendas vão para a fila offline, sincronizada quando a conexão volta.
+- O service worker só é registrado no build de produção (`npm run build && npm start`); em desenvolvimento use `NEXT_PUBLIC_PWA_DEV=1`. Instalação exige HTTPS (ou `localhost`).
+
+## 🔁 Contratos e cobrança recorrente
+
+**Vendas → Contratos** (`/vendas/contratos`): contratos com cliente, itens de serviço/produto, periodicidade (mensal, bimestral, trimestral, semestral, anual), dia de cobrança, início/término, forma de pagamento, nota (NFS-e, NF-e ou nenhuma) e reajuste anual (%).
+
+- A lista mostra **MRR**, contratos ativos e o que falta faturar no mês; o detalhe traz o histórico de faturamentos (conta a receber + nota de cada período).
+- Faturar gera a conta a receber (origem `CONTRATO`, com boleto/Pix) e transmite a NFS-e/NF-e. Cada período (`AAAA-MM`) é faturado **uma única vez**, mesmo com cliques ou rotinas repetidos.
+- Dia 31 em meses curtos vira o último dia do mês (31/01 → 28/02 → 31/03).
+- Automações diárias: **Faturar contratos** (vencimentos dos próximos 5 dias e períodos atrasados) e **Reajustar contratos no aniversário**. Também é possível suspender, reativar (sem cobrar o período suspenso) e encerrar.
+- API: `GET/POST /api/contracts`, `GET/PUT /api/contracts/{id}`, `POST /api/contracts/{id}/bill|suspend|activate|close|adjust`.
+
+## 🧾 Acesso do contador
+
+O perfil **Contador** dá ao escritório de contabilidade acesso somente de consulta a notas fiscais (DANFE/XML), **Arquivos para o contador** (SPED Fiscal, Sintegra e pacote ZIP), financeiro, relatórios, estoque, compras e cadastros — sem PDV, configurações ou edição. No demo: `contador@gestaopro.com.br` / `demo123`. Para dar acesso ao seu contador, convide o usuário em **Configurações → Usuários** com o perfil Contador.
+
+## 🧪 Testes E2E e CI
+
+```bash
+npm test                         # unitários (Vitest)
+npm run test:db                  # inclui testes com banco (precisa do seed)
+npx playwright install chromium  # 1ª vez
+E2E_BASE_URL=http://localhost:3000 npm run test:e2e   # servidor já no ar com o seed
+E2E_START_SERVER=1 npm run test:e2e                   # sobe `npm start` (após `npm run build`)
+```
+
+Os testes E2E (`tests/e2e`) fazem login, abrem as principais páginas, criam e faturam um pedido pela interface (NF-e autorizada) e vendem no PDV (cupom). O workflow `.github/workflows/ci.yml` roda, com PostgreSQL 16 e Node 22: migrações, `tsc`, Vitest (unitários e com banco), build. O job **E2E** é disparado manualmente (Actions → CI → *Run workflow*).
+
+---
+
 ## 🏗️ Arquitetura
 
 - **Next.js 15 (App Router) + TypeScript**: a interface (`src/app/(app)`) e a API (`src/app/api`) ficam no mesmo projeto. Páginas client-side usam **React Query**; componentes no estilo **shadcn/ui** (Radix + Tailwind) em `src/components/ui`.

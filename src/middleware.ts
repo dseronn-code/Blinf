@@ -41,5 +41,5 @@ export default async function middleware(req: NextRequest, ev: NextFetchEvent) {
 }
 
 export const config = {
-  matcher: ['/((?!api|login|loja|pagar|redefinir-senha|sitemap.xml|robots.txt|_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/((?!api|login|loja|pagar|redefinir-senha|sitemap.xml|robots.txt|manifest.webmanifest|sw.js|offline.html|icons/|_next/static|_next/image|favicon.ico).*)'],
 };
