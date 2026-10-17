@@ -30,6 +30,8 @@
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-tabs": "^1.1.13",
     "@tanstack/react-query": "^5.90.2",
+    "@zxing/browser": "^0.1.5",
+    "@zxing/library": "^0.21.3",
     "bcryptjs": "^2.4.3",
     "bwip-js": "^4.7.0",
     "class-variance-authority": "^0.7.1",

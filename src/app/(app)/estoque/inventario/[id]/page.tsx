@@ -7,6 +7,7 @@ import { api, useApi, useAction, openFile } from '@/lib/api';
 import { PageHeader, StatCard, Filters, Chips, SearchBox } from '@/components/common/page';
 import { Dialog } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { CameraScanButton } from '@/components/common/camera-scanner';
 import { Input, Checkbox } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -172,6 +173,7 @@ export default function InventoryCountPage() {
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Quantidade</label>
               <Input type="number" min={0} step="any" value={qty} onChange={(e) => setQty(e.target.value)} className="h-12 text-right text-lg" />
             </div>
+            <CameraScanButton continuous className="h-12 px-3" onCode={(c) => { setCode(c); setTimeout(() => scanRef.current?.form?.requestSubmit(), 80); }} />
             <Button type="submit" className="h-12" disabled={scanning || !code.trim()}>{scanning ? <Loader2 className="animate-spin" /> : <ScanBarcode />} Contar</Button>
           </form>
           <p className="mt-2 text-[11px] text-muted-foreground">Cada leitura soma a quantidade ao contado do produto. Produtos lidos que não estavam na lista são incluídos automaticamente.</p>

@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useApi, useAction } from '@/lib/api';
 import { PageHeader, DataTable } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
+import { CameraScanButton } from '@/components/common/camera-scanner';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { StatusBadge, Badge } from '@/components/ui/badge';
@@ -46,7 +47,7 @@ export default function Checkin() {
           <Card><CardContent className="flex flex-wrap items-center gap-4">
             <div><div className="text-xs text-muted-foreground">Pedido</div><div className="font-bold">nº {po.number} · {po.supplier.name}</div></div>
             <StatusBadge status={po.status} />
-            <form onSubmit={scan} className="flex flex-1 gap-2"><Input ref={ref} autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="Bipe ou digite SKU/EAN e Enter" /><Button variant="outline"><ScanBarcode /> Conferir</Button></form>
+            <form onSubmit={scan} className="flex flex-1 gap-2"><Input ref={ref} autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="Bipe ou digite SKU/EAN e Enter" /><CameraScanButton continuous className="px-3" onCode={(c) => { setCode(c); setTimeout(() => ref.current?.form?.requestSubmit(), 80); }} /><Button variant="outline"><ScanBarcode /> Conferir</Button></form>
             <Button variant="outline" onClick={() => setId('')}>Trocar pedido</Button>
           </CardContent></Card>
           <DataTable rows={po.items} rowClassName={(i: any) => cn(counts[i.id]?.checkedQty === i.quantity ? 'bg-green-50' : counts[i.id]?.checkedQty > i.quantity ? 'bg-red-50' : '')} columns={[

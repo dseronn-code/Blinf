@@ -8,6 +8,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { PageHeader, DataTable } from '@/components/common/page';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
+import { CameraScanButton } from '@/components/common/camera-scanner';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -55,7 +56,7 @@ export default function Picking() {
             {order ? (
               <Card><CardHeader><CardTitle>Conferindo pedido #{order.number} — {order.customer.name}</CardTitle><div className="flex gap-2">{order.shipments[0] && <Button size="sm" variant="outline" onClick={() => openFile(`/api/logistics/labels?ids=${order.shipments[0].id}`)}><Printer /> Etiqueta</Button>}<Button size="sm" variant="outline" onClick={() => act('POST', '/api/logistics/picking', { orderId, reset: true }, 'Conferência reiniciada')}><RotateCcw /> Reiniciar</Button></div></CardHeader>
                 <CardContent className="space-y-3">
-                  <form onSubmit={scan} className="flex gap-2"><div className="relative flex-1"><ScanBarcode className="absolute left-3 top-2.5 h-5 w-5 text-muted-foreground" /><Input ref={ref} autoFocus value={code} onChange={(e) => setCode(e.target.value)} className="h-10 pl-10" placeholder="Bipe o código de barras (EAN) ou digite o SKU" /></div><Button className="h-10">Conferir</Button></form>
+                  <form onSubmit={scan} className="flex gap-2"><div className="relative flex-1"><ScanBarcode className="absolute left-3 top-2.5 h-5 w-5 text-muted-foreground" /><Input ref={ref} autoFocus value={code} onChange={(e) => setCode(e.target.value)} className="h-10 pl-10" placeholder="Bipe o código de barras (EAN) ou digite o SKU" /></div><CameraScanButton continuous className="h-10 px-3" onCode={(c) => { setCode(c); setTimeout(() => ref.current?.form?.requestSubmit(), 80); }} /><Button className="h-10">Conferir</Button></form>
                   <DataTable rows={order.items.filter((i: any) => i.productId)} rowClassName={(i: any) => (i.packedQty >= i.quantity ? 'bg-green-50' : '')} columns={[
                     { key: 'sku', header: 'SKU', cell: (i: any) => <button className="font-mono text-xs hover:text-primary" title="Clique para conferir" onClick={() => { setCode(i.sku); }}>{i.sku}</button> },
                     { key: 'gtin', header: 'EAN', cell: (i: any) => <span className="font-mono text-[10px]">{i.gtin}</span> },

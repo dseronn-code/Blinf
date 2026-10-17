@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { api, ApiError, useApi, useAction, openFile } from '@/lib/api';
 import { PageHeader, StatCard, DataTable, Field } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
+import { CameraScanButton } from '@/components/common/camera-scanner';
 import { Input, Select } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
@@ -213,7 +214,7 @@ export default function PDV() {
           <Button variant="outline" onClick={() => setCash({ action: 'close' })}><Lock /> Fechar caixa</Button>
         </div>
       </div>
-      <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-5">
+      <div className="mb-3 hidden grid-cols-2 gap-3 sm:grid md:grid-cols-5">
         <StatCard label="Vendas na sessão" value={data.summary?.sales ?? 0} />
         <StatCard label="Total vendido" value={money(data.summary?.total)} tone="green" />
         {['DINHEIRO', 'PIX', 'CARTAO_CREDITO'].map((m) => <StatCard key={m} label={PAYMENT_METHODS[m]} value={money(data.summary?.byMethod?.[m] || 0)} />)}
@@ -223,7 +224,8 @@ export default function PDV() {
           <CardContent className="relative">
             <form onSubmit={scan} className="flex gap-2">
               <div className="relative flex-1"><ScanBarcode className="absolute left-3 top-3 h-5 w-5 text-muted-foreground" /><Input ref={ref} autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="Leia o código de barras ou digite SKU / nome do produto" className="h-11 pl-10 text-base" /></div>
-              <Button className="h-11"><Search /> Buscar</Button>
+              <CameraScanButton className="h-11 px-3" onCode={(c) => { setCode(c); setTimeout(() => ref.current?.form?.requestSubmit(), 80); }} />
+              <Button className="h-11"><Search /><span className="hidden sm:inline"> Buscar</span></Button>
             </form>
             {results.length > 0 && (
               <div className="absolute left-4 right-4 z-10 mt-1 max-h-72 overflow-y-auto rounded-md border bg-popover shadow-lg">
