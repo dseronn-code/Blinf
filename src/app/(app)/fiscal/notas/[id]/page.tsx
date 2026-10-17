@@ -29,7 +29,7 @@ export default function InvoicePage() {
       <PageHeader title={`${inv.model === 'NFE' ? 'NF-e' : inv.model === 'NFCE' ? 'NFC-e' : 'NFS-e'} nº ${inv.number} série ${inv.series}`} badge={inv.status === 'CONTINGENCIA' ? <Badge tone="orange">Contingência</Badge> : <StatusBadge status={inv.status} />} description={inv.natureName}
         actions={<>
           <Button variant="outline" onClick={() => router.back()}><ArrowLeft /> Voltar</Button>
-          {['RASCUNHO', 'REJEITADA', 'CONTINGENCIA'].includes(inv.status) && <Button onClick={() => act('POST', `/api/invoices/${id}/transmit`, {}, 'Nota transmitida — veja o retorno da SEFAZ')}><Send /> Transmitir</Button>}
+          {['RASCUNHO', 'REJEITADA', 'CONTINGENCIA', 'PROCESSANDO'].includes(inv.status) && <Button onClick={() => act('POST', `/api/invoices/${id}/transmit`, {}, 'Nota transmitida — veja o retorno da SEFAZ')}><Send /> {inv.status === 'PROCESSANDO' ? 'Consultar retorno' : 'Transmitir'}</Button>}
           <Button variant="outline" onClick={() => openFile(`/api/invoices/${id}/danfe`)}><FileText /> {isService ? 'PDF da NFS-e' : inv.model === 'NFCE' ? 'DANFE NFC-e' : 'DANFE'}</Button>
           {inv.xml && <Button variant="outline" onClick={() => openFile(`/api/invoices/${id}/xml`)}><FileCode /> XML</Button>}
           {inv.status === 'AUTORIZADA' && inv.model === 'NFE' && <Button variant="outline" onClick={() => setCce(true)}><PenLine /> Carta de correção</Button>}

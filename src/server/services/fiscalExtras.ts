@@ -1,7 +1,7 @@
 /**
  * Recursos fiscais complementares:
  * - Transferência de mercadorias entre empresas (CNPJs) com NF-e de transferência
- * - Manifestação do destinatário (consulta de NF-e emitidas contra o CNPJ — simulada)
+ * - Manifestação do destinatário (Distribuição DF-e real via SEFAZ/Focus ou simulada)
  * - Arquivos para o contador: SPED Fiscal (EFD ICMS/IPI), Sintegra e pacote ZIP de XMLs
  */
 import JSZip from 'jszip';
@@ -12,7 +12,10 @@ import { fail } from '../errors';
 import { nextNumber } from '../sequence';
 import { emit } from '../events';
 import { moveStock } from './stock';
-import { buildInvoice, transmitInvoice } from './fiscal';
+import { buildInvoice, transmitInvoice, fiscalProviderOf } from './fiscal';
+import { sefazCtx, distribuicaoDFe, enviarEvento, detManifestacao, readDistributedNfe } from './sefaz/nfe';
+import { getAccount } from '@/server/integrations/accounts';
+import { focusReceived, focusManifest, focusDownload } from '@/server/integrations/providers/focusnfe';
 import { importNfeXml, sampleSupplierXml } from './purchases';
 import type { Actor } from './sales';
 
@@ -67,9 +70,70 @@ export async function transferBetweenCompanies(actor: Actor, input: { toCompanyI
 }
 
 // ---------------------------------------------------------------------------
-// Manifestação do destinatário (Distribuição DF-e — simulada)
+// Manifestação do destinatário (Distribuição DF-e)
+// SIMULADO: gera NF-e de fornecedores fictícios | SEFAZ: NFeDistribuicaoDFe e
+// eventos 2102xx no Ambiente Nacional | FOCUS_NFE: /v2/nfes_recebidas
 // ---------------------------------------------------------------------------
+const DFE_STATE = 'SEFAZ_DFE';
+/** Último NSU/versão consultado (linha interna em IntegrationAccount, oculta da tela de contas) */
+async function dfeState(companyId: string) {
+  const row = await prisma.integrationAccount.upsert({ where: { companyId_provider: { companyId, provider: DFE_STATE } }, create: { companyId, provider: DFE_STATE, status: 'INTERNO' }, update: {} });
+  return { id: row.id, settings: (row.settings || {}) as Record<string, any> };
+}
+async function saveDfeState(id: string, settings: Record<string, any>) {
+  await prisma.integrationAccount.update({ where: { id }, data: { settings } });
+}
+
+async function upsertDistributed(companyId: string, xml: string) {
+  const d = readDistributedNfe(xml);
+  if (!d.accessKey) return null;
+  const existing = await prisma.nfeDistribution.findUnique({ where: { companyId_accessKey: { companyId, accessKey: d.accessKey } } });
+  if (existing) {
+    // Resumo substituído pela NF-e completa quando ela chega (após a ciência)
+    if (d.full && !existing.xml.includes('<infNFe')) return prisma.nfeDistribution.update({ where: { id: existing.id }, data: { xml } });
+    return null;
+  }
+  return prisma.nfeDistribution.create({ data: { companyId, accessKey: d.accessKey, number: d.number, issuerName: d.issuerName, issuerCnpj: d.issuerCnpj, issueDate: d.issueDate, total: d.total, xml } });
+}
+
 export async function fetchDistribution(actor: Actor, count = 3) {
+  const company = (await prisma.company.findUnique({ where: { id: actor.companyId } }))!;
+  const provider = fiscalProviderOf(company);
+  if (provider === 'SEFAZ') {
+    const ctx = sefazCtx(company);
+    const st = await dfeState(actor.companyId);
+    if (st.settings.blockedUntil && Date.now() < st.settings.blockedUntil) fail(429, `Consulta bloqueada pela SEFAZ por consumo indevido (656) até ${new Date(st.settings.blockedUntil).toLocaleTimeString('pt-BR')}. Aguarde 1 hora entre consultas sem novos documentos.`);
+    let ultNSU = String(st.settings.ultNSU || '0');
+    const created = [];
+    for (let i = 0; i < Math.max(count, 1); i++) {
+      const r = await distribuicaoDFe(ctx, { ultNSU });
+      if (r.cStat === '656') {
+        await saveDfeState(st.id, { ...st.settings, ultNSU, blockedUntil: Date.now() + 3600_000 });
+        fail(429, `SEFAZ: ${r.cStat} - ${r.xMotivo}`);
+      }
+      if (!['137', '138'].includes(r.cStat)) fail(400, `SEFAZ: ${r.cStat} - ${r.xMotivo}`);
+      for (const doc of r.docs) if (/^(resNFe|procNFe)/.test(doc.schema)) { const row = await upsertDistributed(actor.companyId, doc.xml); if (row) created.push(row); }
+      ultNSU = r.ultNSU || ultNSU;
+      // 137: nada novo — a SEFAZ exige aguardar 1h antes de nova consulta
+      await saveDfeState(st.id, { ...st.settings, ultNSU, maxNSU: r.maxNSU, lastAt: Date.now(), ...(r.cStat === '137' ? { blockedUntil: Date.now() + 3600_000 } : { blockedUntil: null }) });
+      if (r.cStat === '137' || Number(ultNSU) >= Number(r.maxNSU)) break;
+    }
+    return created;
+  }
+  if (provider === 'FOCUS_NFE') {
+    const acc = await getAccount(actor.companyId, 'FOCUS_NFE');
+    if (!acc) fail(400, 'Conecte a conta Focus NFe em Integrações → Contas e credenciais');
+    const st = await dfeState(actor.companyId);
+    const r = await focusReceived(acc!, onlyDigits(company.cnpj), Number(st.settings.focusVersion || 0));
+    const created = [];
+    for (const n of r.items) {
+      if (!n.chave_nfe || (await prisma.nfeDistribution.findUnique({ where: { companyId_accessKey: { companyId: actor.companyId, accessKey: n.chave_nfe } } }))) continue;
+      const xml = n.nfe_completa ? (await focusDownload(acc!, `/v2/nfes_recebidas/${n.chave_nfe}.xml`).catch(() => null)) : null;
+      created.push(await prisma.nfeDistribution.create({ data: { companyId: actor.companyId, accessKey: n.chave_nfe, number: String(Number(String(n.chave_nfe).slice(25, 34))), issuerName: n.nome_emitente || 'Emitente', issuerCnpj: onlyDigits(n.documento_emitente), issueDate: new Date(n.data_emissao || Date.now()), total: Number(n.valor_total || 0), xml: xml || `<resNFe><chNFe>${n.chave_nfe}</chNFe></resNFe>` } }));
+    }
+    await saveDfeState(st.id, { ...st.settings, focusVersion: r.maxVersion });
+    return created;
+  }
   const created = [];
   for (let i = 0; i < count; i++) {
     const xml = await sampleSupplierXml(actor);
@@ -84,6 +148,7 @@ export async function fetchDistribution(actor: Actor, count = 3) {
 }
 
 const EVENT_DESC: Record<string, string> = { CIENCIA: '210210 - Ciência da Operação', CONFIRMADA: '210200 - Confirmação da Operação', DESCONHECIDA: '210220 - Desconhecimento da Operação', NAO_REALIZADA: '210240 - Operação não Realizada' };
+const EVENT_CODE: Record<string, string> = { CIENCIA: '210210', CONFIRMADA: '210200', DESCONHECIDA: '210220', NAO_REALIZADA: '210240' };
 
 export async function manifest(actor: Actor, id: string, status: string, justification?: string) {
   if (!EVENT_DESC[status]) fail(400, 'Tipo de manifestação inválido');
@@ -91,6 +156,18 @@ export async function manifest(actor: Actor, id: string, status: string, justifi
   if (!d) fail(404, 'Documento não encontrado');
   if (status === 'NAO_REALIZADA' && (!justification || justification.length < 15)) fail(400, 'Justificativa obrigatória (mín. 15 caracteres) para "Operação não realizada"');
   if (['CONFIRMADA', 'DESCONHECIDA', 'NAO_REALIZADA'].includes(d!.status)) fail(400, 'Manifestação conclusiva já registrada');
+  const company = (await prisma.company.findUnique({ where: { id: actor.companyId } }))!;
+  const provider = fiscalProviderOf(company);
+  if (provider === 'SEFAZ') {
+    const r = await enviarEvento(sefazCtx(company), 55, { chNFe: d!.accessKey, tpEvento: EVENT_CODE[status], det: detManifestacao(EVENT_CODE[status], justification), nacional: true });
+    // 573: evento em duplicidade (já registrado) — trata como sucesso
+    if (!r.ok && r.cStat !== '573') fail(400, `SEFAZ: ${r.cStat} - ${r.xMotivo}`);
+  } else if (provider === 'FOCUS_NFE') {
+    const acc = await getAccount(actor.companyId, 'FOCUS_NFE');
+    if (!acc) fail(400, 'Conecte a conta Focus NFe em Integrações → Contas e credenciais');
+    const r = await focusManifest(acc!, d!.accessKey, status, justification);
+    if (!r.ok) fail(400, `Manifestação rejeitada: ${r.xMotivo}`);
+  }
   return prisma.nfeDistribution.update({ where: { id }, data: { status } });
 }
 
@@ -100,7 +177,22 @@ export async function importDistribution(actor: Actor, id: string) {
   if (!d) fail(404, 'Documento não encontrado');
   if (!['CIENCIA', 'CONFIRMADA'].includes(d!.status)) fail(400, 'Manifeste ciência ou confirmação antes de baixar o XML');
   if (d!.inboundId) fail(400, 'XML já importado');
-  const inbound = await importNfeXml(actor, d!.xml);
+  let xml = d!.xml;
+  if (!xml.includes('<infNFe')) {
+    // Só o resumo foi distribuído: busca a NF-e completa pela chave
+    const company = (await prisma.company.findUnique({ where: { id: actor.companyId } }))!;
+    const provider = fiscalProviderOf(company);
+    if (provider === 'SEFAZ') {
+      const r = await distribuicaoDFe(sefazCtx(company), { chNFe: d!.accessKey });
+      xml = r.docs.find((x) => x.schema.startsWith('procNFe'))?.xml || xml;
+    } else if (provider === 'FOCUS_NFE') {
+      const acc = await getAccount(actor.companyId, 'FOCUS_NFE');
+      if (acc) xml = (await focusDownload(acc, `/v2/nfes_recebidas/${d!.accessKey}.xml`).catch(() => null)) || xml;
+    }
+    if (!xml.includes('<infNFe')) fail(400, 'A NF-e completa ainda não está disponível na SEFAZ — tente novamente em alguns minutos após a ciência');
+    await prisma.nfeDistribution.update({ where: { id }, data: { xml } });
+  }
+  const inbound = await importNfeXml(actor, xml);
   await prisma.nfeDistribution.update({ where: { id }, data: { inboundId: inbound.id } });
   return inbound;
 }

@@ -5,8 +5,9 @@
  */
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage, type PDFImage } from 'pdf-lib';
 import bwipjs from 'bwip-js/node';
-import type { Company, Invoice, InvoiceItem, FinancialEntry, BankAccount, Shipment, SalesOrder } from '@prisma/client';
+import type { Company, Invoice, InvoiceItem, FinancialEntry, BankAccount, Shipment, SalesOrder, Mdfe, Gnre } from '@prisma/client';
 import { formatAccessKey } from '@/lib/br';
+import { nfceQrCode, nfceUrlChave } from '@/server/services/sefaz/qrcode';
 import { fmtDoc, fmtCep, fmtDate, fmtDateTime, money, num } from '@/lib/utils';
 
 const WIN_ANSI_EXTRA = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
@@ -53,6 +54,9 @@ async function newDoc(size: [number, number] = [595.28, 841.89]) {
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   return { doc, page, font, bold };
 }
+
+/** Marca d'água de documento sem valor fiscal (simulação ou homologação real) */
+const envLabel = (inv: Pick<Invoice, 'procXml' | 'providerRef'>) => (inv.procXml || inv.providerRef ? 'SEM VALOR FISCAL - HOMOLOGAÇÃO' : 'SEM VALOR FISCAL - SIMULAÇÃO');
 
 function watermark(c: Ctx, w: number, h: number, label: string) {
   c.page.drawText(safe(label), { x: 60, y: h / 2 - 80, size: 36, font: c.bold, color: rgb(0.85, 0.2, 0.2), opacity: 0.18, rotate: { type: 'degrees' as never, angle: 35 } as never });
@@ -159,7 +163,7 @@ export async function danfePdf(inv: Invoice & { items: InvoiceItem[] }, company:
   const info = safe(refs + (inv.additionalInfo || ''));
   for (let i = 0; i < 4; i++) text(c, info.slice(i * 140, (i + 1) * 140), M + 4, 68 - i * 9, 6.5);
   if (inv.status === 'CANCELADA') watermark(c, W, 841, 'NF-e CANCELADA');
-  else watermark(c, W, 841, 'SEM VALOR FISCAL - SIMULAÇÃO');
+  else if (inv.environment !== 1) watermark(c, W, 841, envLabel(inv));
   return doc.save();
 }
 
@@ -201,15 +205,17 @@ export async function danfcePdf(inv: Invoice & { items: InvoiceItem[] }, company
   text(c, `VALOR A PAGAR R$ ${num(inv.total, 2)}`, 8, y, 9, true); y -= 14;
   text(c, `Tributos totais incidentes (Lei 12.741/2012): R$ ${num(inv.approxTaxes, 2)}`, 8, y, 6); y -= 14;
   center(`NFC-e nº ${inv.number}  Série ${inv.series}  ${fmtDateTime(inv.authorizedAt || inv.issueDate)}`, 6.5, true);
-  center('Consulte pela Chave de Acesso em www.nfce.fazenda.sp.gov.br', 6);
+  center(`Consulte pela Chave de Acesso em ${nfceUrlChave(company.uf, inv.environment === 1 ? 1 : 2)}`, 6);
   if (inv.accessKey) center(formatAccessKey(inv.accessKey), 6);
   center(inv.customerDoc ? `CONSUMIDOR CPF/CNPJ: ${fmtDoc(inv.customerDoc)}` : 'CONSUMIDOR NÃO IDENTIFICADO', 6.5);
   center(`Protocolo de autorização: ${inv.protocol || (inv.contingency ? 'pendente (contingência)' : '-')}`, 6);
-  const qrUrl = `https://www.homologacao.nfce.fazenda.sp.gov.br/qrcode?p=${inv.accessKey}|2|2|${company.cscId || '1'}|SIMULADO`;
+  // QR Code v2: o mesmo do infNFeSupl do XML (com hash do CSC); sem XML, calculado aqui
+  const fromXml = inv.xml?.match(/<qrCode>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/qrCode>/)?.[1]?.replace(/&amp;/g, '&');
+  const qrUrl = fromXml || (inv.accessKey ? nfceQrCode({ uf: company.uf, accessKey: inv.accessKey, tpAmb: inv.environment === 1 ? 1 : 2, cscId: company.cscId, csc: company.cscToken || 'SIMULADO' }) : '');
   const qr = await barcode(doc, 'qrcode', qrUrl, { scale: 3, height: undefined });
   if (qr) page.drawImage(qr, { x: 63, y: y - 105, width: 100, height: 100 });
   y -= 115;
-  center('EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO - SEM VALOR FISCAL', 6, true);
+  if (inv.environment !== 1) center('EMITIDA EM AMBIENTE DE HOMOLOGAÇÃO - SEM VALOR FISCAL', 6, true);
   if (inv.status === 'CANCELADA') watermark(c, 226, h, 'CANCELADA');
   return doc.save();
 }
@@ -244,7 +250,7 @@ export async function nfsePdf(inv: Invoice & { items: InvoiceItem[] }, company: 
   box(c, M + 410, y - 20, W - 2 * M - 410, 26, 'Valor do ISS', money(inv.issValue), 9, true);
   y -= 40;
   text(c, safe(inv.additionalInfo || '').slice(0, 150), M, y, 7);
-  watermark(c, W, 841, inv.status === 'CANCELADA' ? 'NFS-e CANCELADA' : 'SEM VALOR FISCAL - SIMULAÇÃO');
+  if (inv.status === 'CANCELADA' || inv.environment !== 1) watermark(c, W, 841, inv.status === 'CANCELADA' ? 'NFS-e CANCELADA' : envLabel(inv));
   return doc.save();
 }
 
@@ -443,5 +449,109 @@ export async function tablePdf(title: string, columns: { key: string; label: str
       page.drawText(t, { x: c.align === 'right' ? M + (i + 1) * colW - w - 2 : M + i * colW + 2, y, size: 7.5, font: bold });
     });
   }
+  return doc.save();
+}
+
+/** DAMDFE — Documento Auxiliar do MDF-e (retrato) com QR Code e código de barras da chave */
+export async function damdfePdf(m: Mdfe, company: Company, invoices: { number: number; series: number; accessKey: string | null; customerName: string; total: number }[] = []) {
+  const { doc, page, font, bold } = await newDoc();
+  const c = { page, font, bold };
+  const M = 24, W = 595.28 - 2 * M;
+  let y = 800;
+  text(c, company.name, M, y, 11, true); y -= 12;
+  text(c, `CNPJ ${fmtDoc(company.cnpj)}   IE ${company.ie || ''}`, M, y, 8); y -= 10;
+  text(c, `${company.street || ''}, ${company.number || ''} - ${company.district || ''} - ${company.city || ''}/${company.uf}  CEP ${fmtCep(company.zip)}`, M, y, 8); y -= 16;
+  text(c, 'DAMDFE - Documento Auxiliar de Manifesto Eletrônico de Documentos Fiscais', M, y, 10, true);
+  const qrText = m.accessKey ? `https://dfe-portal.svrs.rs.gov.br/mdfe/qrCode?chMDFe=${m.accessKey}&tpAmb=${m.environment}` : '';
+  const qr = qrText ? await barcode(doc, 'qrcode', qrText, { scale: 3, height: undefined }) : null;
+  if (qr) page.drawImage(qr, { x: M + W - 92, y: y - 6, width: 92, height: 92 });
+  y -= 30;
+  const w = (W - 100) / 7;
+  [['Modelo', '58'], ['Série', m.series], ['Número', m.number], ['FL', '1/1'], ['Emissão', fmtDateTime(m.issueDate)], ['UF carreg.', m.ufStart], ['UF descarreg.', m.ufEnd]].forEach(([l, v], i) => box(c, M + i * w, y, w, 24, String(l), v, 8, true));
+  y -= 40;
+  if (m.accessKey) {
+    const bc = await barcode(doc, 'code128', m.accessKey, { scale: 2, height: 9 });
+    if (bc) page.drawImage(bc, { x: M, y, width: 300, height: 30 });
+  }
+  y -= 26;
+  box(c, M, y, W - 100, 22, 'Chave de acesso', m.accessKey ? formatAccessKey(m.accessKey) : 'Não transmitido', 9, true);
+  y -= 22;
+  box(c, M, y, W - 100, 22, 'Protocolo de autorização', m.protocol ? `${m.protocol} - ${fmtDateTime(m.issueDate)}` : '-', 8);
+  y -= 30;
+  text(c, 'MODAL RODOVIÁRIO DE CARGA', M, y, 9, true); y -= 4;
+  const q = W / 4;
+  y -= 24;
+  box(c, M, y, q, 24, 'Qtd. NF-e', m.invoiceKeys.length, 9, true);
+  box(c, M + q, y, q, 24, 'Peso total (kg)', num(m.totalWeight, 3), 9, true);
+  box(c, M + 2 * q, y, q, 24, 'Valor total da carga', money(m.totalValue), 9, true);
+  box(c, M + 3 * q, y, q, 24, 'Percurso (UFs)', [m.ufStart, ...m.route, m.ufEnd].filter((u, i, a) => a.indexOf(u) === i).join(' > '), 8);
+  y -= 24;
+  box(c, M, y, q, 24, 'Placa do veículo', m.vehiclePlate, 9, true);
+  box(c, M + q, y, q, 24, 'UF / Tara (kg)', `${m.vehicleUf} / ${m.vehicleTara}`, 8);
+  box(c, M + 2 * q, y, q, 24, 'RNTRC', m.rntrc || '-', 8);
+  box(c, M + 3 * q, y, q, 24, 'Condutor (CPF)', fmtDoc(m.driverCpf), 8);
+  y -= 24;
+  box(c, M, y, W, 22, 'Nome do condutor', m.driverName, 8);
+  y -= 22;
+  box(c, M, y, W / 2, 22, 'Município de carregamento', `${m.loadCity} (${m.loadCityCode})`, 8);
+  box(c, M + W / 2, y, W / 2, 22, 'Município de descarregamento', `${m.unloadCity} (${m.unloadCityCode})`, 8);
+  y -= 30;
+  text(c, 'DOCUMENTOS VINCULADOS (NF-e)', M, y, 9, true); y -= 12;
+  for (const k of m.invoiceKeys) {
+    const inv = invoices.find((i) => i.accessKey === k);
+    text(c, `${formatAccessKey(k)}${inv ? `   NF-e ${inv.number}/${inv.series}  ${inv.customerName.slice(0, 30)}  ${money(inv.total)}` : ''}`, M, y, 7);
+    y -= 10;
+    if (y < 80) break;
+  }
+  y -= 8;
+  text(c, 'Consulte a autenticidade em https://dfe-portal.svrs.rs.gov.br/MDFE/Consulta', M, Math.max(y, 50), 7);
+  if (m.status === 'CANCELADO') watermark(c, 595.28, 841, 'MDF-e CANCELADO');
+  else if (m.status === 'ENCERRADO') watermark(c, 595.28, 841, 'MDF-e ENCERRADO');
+  else if (m.environment !== 1 || m.status !== 'AUTORIZADO') watermark(c, 595.28, 841, m.status === 'AUTORIZADO' ? 'SEM VALOR FISCAL - HOMOLOGAÇÃO' : 'SEM VALOR FISCAL - NÃO AUTORIZADO');
+  return doc.save();
+}
+
+/** Guia GNRE (via do contribuinte) com linha digitável e código de barras de arrecadação */
+export async function gnrePdf(g: Gnre, company: Company, revenueName: string, invoice?: { number: number; accessKey: string | null; customerName: string } | null) {
+  const { doc, page, font, bold } = await newDoc();
+  const c = { page, font, bold };
+  const M = 30, W = 595.28 - 2 * M;
+  let y = 790;
+  text(c, 'GNRE - Guia Nacional de Recolhimento de Tributos Estaduais', M, y, 12, true); y -= 26;
+  box(c, M, y, W * 0.2, 24, 'UF favorecida', g.uf, 12, true);
+  box(c, M + W * 0.2, y, W * 0.2, 24, 'Código da receita', g.revenueCode, 11, true);
+  box(c, M + W * 0.4, y, W * 0.6, 24, 'Receita', revenueName, 8);
+  y -= 24;
+  box(c, M, y, W * 0.6, 24, 'Contribuinte emitente', company.name, 8, true);
+  box(c, M + W * 0.6, y, W * 0.4, 24, 'CNPJ', fmtDoc(company.cnpj), 9);
+  y -= 24;
+  box(c, M, y, W, 24, 'Endereço', `${company.street || ''}, ${company.number || ''} - ${company.city || ''}/${company.uf}  CEP ${fmtCep(company.zip)}`, 8);
+  y -= 24;
+  box(c, M, y, W * 0.4, 24, 'Documento de origem', invoice ? `NF-e ${invoice.number}` : '-', 9);
+  box(c, M + W * 0.4, y, W * 0.6, 24, 'Destinatário', invoice?.customerName || '-', 8);
+  y -= 24;
+  box(c, M, y, W, 24, 'Chave da NF-e', invoice?.accessKey ? formatAccessKey(invoice.accessKey) : '-', 8);
+  y -= 24;
+  box(c, M, y, W / 3, 26, 'Período de referência', `${String(g.dueDate.getMonth() + 1).padStart(2, '0')}/${g.dueDate.getFullYear()}`, 9);
+  box(c, M + W / 3, y, W / 3, 26, 'Vencimento', fmtDate(g.dueDate), 11, true);
+  box(c, M + (2 * W) / 3, y, W / 3, 26, 'Total a recolher', money(g.amount), 11, true);
+  y -= 40;
+  if (g.line) {
+    text(c, 'Linha digitável', M, y, 7); y -= 14;
+    text(c, g.line, M, y, 12, true); y -= 12;
+  }
+  if (g.barcode) {
+    const bc = await barcode(doc, 'interleaved2of5', g.barcode, { scale: 2, height: 13 });
+    if (bc) page.drawImage(bc, { x: M, y: y - 50, width: 400, height: 46 });
+    y -= 62;
+  } else {
+    text(c, 'Código de barras ainda não disponível (aguardando o processamento do lote no Portal GNRE).', M, y - 10, 8);
+    y -= 24;
+  }
+  text(c, safe(g.reference || ''), M, y, 7);
+  y -= 12;
+  text(c, `Situação: ${g.status}${g.paidAt ? ` - paga em ${fmtDate(g.paidAt)}` : ''}`, M, y, 8);
+  if (g.status === 'CANCELADA') watermark(c, 595.28, 841, 'GUIA CANCELADA');
+  else if (/SIMULADO/i.test(g.reference || '')) watermark(c, 595.28, 841, 'SIMULAÇÃO - NÃO PAGAR');
   return doc.save();
 }

@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/db';
 import { route, fileResponse } from '@/server/http';
 import { fail } from '@/server/errors';
-import { transmitInvoice, cancelInvoice } from '@/server/services/fiscal';
+import { transmitInvoice, cancelInvoice, correctionLetter } from '@/server/services/fiscal';
 import { danfePdf } from '@/server/pdf';
 
 export const POST = route('fiscal', 'edit', async ({ ctx, params, body }) => {
@@ -11,12 +11,9 @@ export const POST = route('fiscal', 'edit', async ({ ctx, params, body }) => {
     case 'cancel':
       await cancelInvoice(ctx.companyId, ctx.orgId, params.id, body?.reason || '', ctx.userName);
       return { ok: true };
-    case 'cce': {
-      const inv = await prisma.invoice.findFirst({ where: { id: params.id, companyId: ctx.companyId, status: 'AUTORIZADA' } });
-      if (!inv) fail(400, 'Carta de correção só para notas autorizadas');
-      if (!body?.text || body.text.length < 15) fail(400, 'A correção deve ter no mínimo 15 caracteres');
-      return prisma.invoiceEvent.create({ data: { invoiceId: params.id, type: 'CCE', code: '135', protocol: `1${Date.now()}`, description: `Carta de correção: ${body.text}` } });
-    }
+    case 'cce':
+      // Simulada, SEFAZ (evento 110110) ou Focus NFe, conforme a nota foi autorizada
+      return correctionLetter(ctx.companyId, params.id, body?.text || '');
     default:
       fail(404, 'Ação inválida');
   }

@@ -3,6 +3,7 @@ import { route } from '@/server/http';
 import { fail } from '@/server/errors';
 import { onlyDigits } from '@/lib/utils';
 import { readCertificate, generateDemoCertificate } from '@/server/services/cert';
+import { updateFiscalSettings } from '@/server/services/fiscal';
 
 /**
  * Instalação do certificado digital A1 (.pfx/.p12).
@@ -40,12 +41,16 @@ export const POST = route('fiscal', 'edit', async ({ ctx, req }) => {
   return { ...updated, warning };
 });
 
-export const DELETE = route('fiscal', 'edit', async ({ ctx }) =>
-  prisma.company.update({ where: { id: ctx.companyId }, data: { certName: null, certIssuer: null, certValidUntil: null, certUploadedAt: null, certPfx: null, certPassword: null, certSerial: null, sefazMode: 'SIMULADO' }, select: { id: true } }),
-);
+export const DELETE = route('fiscal', 'edit', async ({ ctx }) => {
+  const c = await prisma.company.findUnique({ where: { id: ctx.companyId }, select: { fiscalProvider: true } });
+  // Sem certificado não há comunicação direta com a SEFAZ: volta ao modo simulado
+  return prisma.company.update({ where: { id: ctx.companyId }, data: { certName: null, certIssuer: null, certValidUntil: null, certUploadedAt: null, certPfx: null, certPassword: null, certSerial: null, sefazMode: 'SIMULADO', ...(c?.fiscalProvider === 'SEFAZ' ? { fiscalProvider: 'SIMULADO' } : {}) }, select: { id: true } });
+});
 
-/** Modo da SEFAZ: normal ou contingência (NFC-e offline) */
+/** Modo da SEFAZ: normal ou contingência (NFC-e offline); também salva o modo de emissão/ambiente */
 export const PUT = route('fiscal', 'edit', async ({ ctx, body }) => {
+  // Modo de emissão (SIMULADO | SEFAZ | FOCUS_NFE), ambiente e CSC da NFC-e
+  if (body?.contingency === undefined) return updateFiscalSettings(ctx.companyId, body || {});
   const c = await prisma.company.findUnique({ where: { id: ctx.companyId } });
   const mode = body?.contingency ? 'CONTINGENCIA' : c?.certPfx ? 'ASSINADO' : 'SIMULADO';
   return prisma.company.update({ where: { id: ctx.companyId }, data: { sefazMode: mode }, select: { sefazMode: true } });
