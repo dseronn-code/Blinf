@@ -10,6 +10,7 @@ const DEMO = [
   { label: 'Vendedor', email: 'vendedor@gestaopro.com.br', password: 'demo123' },
   { label: 'Financeiro', email: 'financeiro@gestaopro.com.br', password: 'demo123' },
   { label: 'Estoquista', email: 'estoque@gestaopro.com.br', password: 'demo123' },
+  { label: 'Contador', email: 'contador@gestaopro.com.br', password: 'demo123' },
 ];
 
 export default function LoginPage() {

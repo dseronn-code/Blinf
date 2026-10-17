@@ -171,3 +171,54 @@ describe.skipIf(process.env.RUN_DB_TESTS !== '1')('cotação com conta conectada
     }
   });
 });
+
+describe('volumes alterados após a compra da etiqueta', () => {
+  it('carrinho do Melhor Envio divide o peso entre os volumes', () => {
+    const body = meCartBody({ settings: {} }, { ...purchase, volume: { ...purchase.volume, weight: 3, count: 3 } });
+    expect(body.volumes).toHaveLength(3);
+    expect(body.volumes.every((v) => v.weight === 1)).toBe(true);
+  });
+});
+
+describe.skipIf(process.env.RUN_DB_TESTS !== '1')('volumes com etiqueta comprada (banco)', () => {
+  it('sem recompra: erro "cancele e compre novamente"; com recompra ligada: cancela e compra outra', async () => {
+    const { prisma } = await import('@/lib/db');
+    const { setShipmentVolumes } = await import('@/server/services/operations');
+    const { saveCredentials } = await import('@/server/integrations/accounts');
+    const company = await prisma.company.findFirst({ where: { cnpj: '11444777000161' } });
+    const before = await prisma.integrationAccount.findUnique({ where: { companyId_provider: { companyId: company!.id, provider: 'MELHOR_ENVIO' } } });
+    if (before?.status === 'CONECTADO') return; // ambiente com conta real: não mexe
+    const order = await prisma.salesOrder.findFirst({ where: { companyId: company!.id, items: { some: { productId: { not: null } } } } });
+    const actor = { companyId: company!.id, orgId: company!.organizationId, userName: 'Teste' };
+    const s = await prisma.shipment.create({ data: { companyId: company!.id, salesOrderId: order!.id, provider: 'MELHOR_ENVIO', carrier: 'Correios', service: 'PAC', price: 21.9, deadlineDays: 8, weight: 2, status: 'ETIQUETA_GERADA', providerRef: 'ord-old', trackingCode: 'QB000000000BR', events: [] } });
+    const calls: string[] = [];
+    try {
+      // Sem conta conectada (ou recompra desligada): aviso obrigatório
+      await expect(setShipmentVolumes(actor, s.id, 2)).rejects.toThrow('cancele a etiqueta e compre novamente');
+      expect((await prisma.shipment.findUnique({ where: { id: s.id } }))!.volumes).toBe(1);
+      const acc = await saveCredentials(company!.id, 'MELHOR_ENVIO', { environment: 'SANDBOX', values: { token: 'tok', email: 'dev@loja.com' } });
+      await prisma.integrationAccount.update({ where: { id: acc.id }, data: { status: 'CONECTADO' } });
+      await expect(setShipmentVolumes(actor, s.id, 2)).rejects.toThrow('cancele a etiqueta e compre novamente');
+      await prisma.integrationAccount.update({ where: { id: acc.id }, data: { settings: { ...(acc.settings as object), rebuyOnVolumes: true } } });
+      setHttpMock((r) => {
+        const path = new URL(r.url).pathname;
+        calls.push(path);
+        if (path.endsWith('/calculate')) return { data: ME_QUOTE };
+        if (path.endsWith('/cancel')) return { data: { 'ord-old': { canceled: true } } };
+        if (path.endsWith('/me/cart')) return { status: 201, data: { id: 'ord-new', price: 25, status: 'pending' } };
+        if (path.endsWith('/checkout') || path.endsWith('/generate')) return { data: {} };
+        if (path.endsWith('/print')) return { data: { url: 'https://sandbox.melhorenvio.com.br/imprimir/new' } };
+        if (path.endsWith('/tracking')) return { data: { 'ord-new': { status: 'released', tracking: 'QB111111111BR' } } };
+        return { status: 404, data: {} };
+      });
+      const r: any = await setShipmentVolumes(actor, s.id, 2, 3);
+      expect(calls[0]).toBe('/api/v2/me/shipment/cancel');
+      expect(calls).toContain('/api/v2/me/cart');
+      expect(r).toMatchObject({ providerRef: 'ord-new', trackingCode: 'QB111111111BR', volumes: 2, weight: 3, status: 'ETIQUETA_GERADA' });
+    } finally {
+      await prisma.shipment.delete({ where: { id: s.id } });
+      if (before) await prisma.integrationAccount.update({ where: { id: before.id }, data: { status: before.status, secrets: before.secrets, settings: before.settings as object, environment: before.environment } });
+      else await prisma.integrationAccount.deleteMany({ where: { companyId: company!.id, provider: 'MELHOR_ENVIO' } });
+    }
+  });
+});
