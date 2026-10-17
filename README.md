@@ -41,6 +41,20 @@ Restaurar um backup: `gunzip -c backups/gestaopro-AAAAMMDD-HHMM.sql.gz | docker 
 
 Para recriar os dados de demonstração: `docker compose exec app sh -c "SEED_FORCE=1 npm run db:seed"`.
 
+## ☁️ Publicar no Railway (acesso pela internet e pelo celular)
+
+1. Entre em **railway.com** com sua conta do GitHub → **New Project** → **Deploy from GitHub repo** → escolha **Blinf**. Em *Settings → Source*, selecione o branch onde está o código.
+2. No mesmo projeto: **+ Create → Database → PostgreSQL**.
+3. No serviço do GestãoPro, aba **Variables**, adicione:
+   - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
+   - `NEXTAUTH_SECRET` = uma frase secreta longa (ex.: gere em *Generate* ou digite 40 caracteres aleatórios)
+4. Aba **Settings → Networking → Generate Domain** (porta 3000 se perguntar). O endereço fica `https://<nome>.up.railway.app`.
+5. Aguarde o deploy (o `railway.json` já configura o Dockerfile e o health check). No primeiro start os dados de demonstração são carregados em segundo plano (~10 min); depois entre com `admin@gestaopro.com.br` / `admin123` e **troque a senha**.
+
+Para começar sem dados de demonstração, defina `SEED_DEMO=false` antes do primeiro deploy (será preciso criar o primeiro usuário pelo banco). Para os webhooks e integrações reais, o domínio do Railway já é HTTPS público.
+
+**No celular:** abra o endereço no Chrome (Android) → menu ⋮ → **Instalar app**; no iPhone, Safari → Compartilhar → **Adicionar à Tela de Início**. A página `/celular` mostra um QR Code com o passo a passo. **Arquivo APK:** em **pwabuilder.com**, cole o endereço do Railway e baixe o pacote Android (instalável direto no celular).
+
 ## 💻 Rodando localmente (sem Docker)
 
 Pré-requisitos: Node.js 20+ e PostgreSQL 14+.

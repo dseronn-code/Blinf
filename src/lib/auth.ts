@@ -9,10 +9,21 @@ import { rateLimit } from './rateLimit';
  * Autenticação por e-mail/senha (NextAuth + JWT), com segundo fator (TOTP)
  * opcional por usuário e limite de tentativas por e-mail.
  */
+export const SESSION_COOKIE = 'gp.session-token';
+
 export const authOptions: NextAuthOptions = {
   session: { strategy: 'jwt', maxAge: 60 * 60 * 24 * 7 },
   secret: process.env.NEXTAUTH_SECRET || 'gestaopro-dev-secret',
   pages: { signIn: '/login' },
+  // Nome de cookie fixo: a sessão funciona igual em http://localhost, no IP da rede e em
+  // endereços HTTPS (domínio próprio ou túnel para o celular). AUTH_TRUST_HOST=true faz o
+  // NextAuth usar o endereço pelo qual o sistema foi acessado.
+  cookies: {
+    sessionToken: {
+      name: SESSION_COOKIE,
+      options: { httpOnly: true, sameSite: 'lax', path: '/', secure: (process.env.NEXTAUTH_URL || '').startsWith('https://') },
+    },
+  },
   providers: [
     CredentialsProvider({
       name: 'E-mail e senha',

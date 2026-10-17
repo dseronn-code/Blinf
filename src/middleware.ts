@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest, type NextFetchEvent } from 'next/server';
 import { withAuth, type NextRequestWithAuth } from 'next-auth/middleware';
 
-const auth = withAuth({ pages: { signIn: '/login' }, secret: process.env.NEXTAUTH_SECRET || 'gestaopro-dev-secret' });
+// mesmo nome de cookie de src/lib/auth.ts (o middleware roda no edge e não importa o Prisma)
+const auth = withAuth({ pages: { signIn: '/login' }, secret: process.env.NEXTAUTH_SECRET || 'gestaopro-dev-secret', cookies: { sessionToken: { name: 'gp.session-token' } } });
 
 /** Hosts do próprio ERP (demais hosts são tratados como domínio próprio de loja virtual) */
 function isAppHost(host: string) {
@@ -41,5 +42,5 @@ export default async function middleware(req: NextRequest, ev: NextFetchEvent) {
 }
 
 export const config = {
-  matcher: ['/((?!api|login|loja|pagar|redefinir-senha|sitemap.xml|robots.txt|manifest.webmanifest|sw.js|offline.html|icons/|_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/((?!api|login|celular|loja|pagar|redefinir-senha|sitemap.xml|robots.txt|manifest.webmanifest|sw.js|offline.html|icons/|_next/static|_next/image|favicon.ico).*)'],
 };

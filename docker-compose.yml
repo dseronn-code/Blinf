@@ -25,6 +25,8 @@ services:
       DATABASE_URL: postgresql://gestao:gestao@db:5432/gestaopro?schema=public
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-gestaopro-demo-secret-troque-em-producao}
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      # Aceita o endereço usado no acesso (IP da rede, domínio do Railway ou domínio próprio)
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
       # Hosts adicionais do ERP (separados por vírgula); outros hosts são tratados como domínio próprio de loja
       APP_HOSTS: ${APP_HOSTS:-}
       # Opcional: assistente de IA com Claude (sem a chave usa o motor local)
