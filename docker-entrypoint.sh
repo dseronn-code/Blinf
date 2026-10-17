@@ -5,8 +5,28 @@ set -e
 # No Railway, o endereço público vem de RAILWAY_PUBLIC_DOMAIN (Settings → Networking → Generate Domain)
 if [ -z "$NEXTAUTH_URL" ] && [ -n "$RAILWAY_PUBLIC_DOMAIN" ]; then export NEXTAUTH_URL="https://$RAILWAY_PUBLIC_DOMAIN"; fi
 export AUTH_TRUST_HOST="${AUTH_TRUST_HOST:-true}"
-echo "⏳ Aguardando PostgreSQL..."
-until pg_isready -d "${DATABASE_URL%%\?*}" >/dev/null 2>&1; do sleep 1; done
+if [ -z "$DATABASE_URL" ]; then
+  echo "❌ A variável DATABASE_URL está vazia."
+  echo "   No Railway: crie o banco (+ Create → Database → PostgreSQL) e, no serviço do GestãoPro,"
+  echo "   aba Variables, adicione DATABASE_URL = \${{Postgres.DATABASE_URL}} (botão Add Reference)."
+  exit 1
+fi
+DB_HOST=$(echo "$DATABASE_URL" | sed -E 's#^[a-z]+://([^@]*@)?([^:/?]+).*#\2#')
+echo "⏳ Aguardando PostgreSQL em $DB_HOST..."
+tries=0
+until pg_isready -d "${DATABASE_URL%%\?*}" >/dev/null 2>&1; do
+  tries=$((tries+1))
+  if [ $((tries % 15)) -eq 0 ]; then
+    echo "   ainda aguardando $DB_HOST ($tries s): $(pg_isready -d "${DATABASE_URL%%\?*}" 2>&1)"
+  fi
+  if [ $tries -ge 180 ]; then
+    echo "❌ Não foi possível conectar ao banco em 3 minutos. Confira se o serviço Postgres está ativo"
+    echo "   e se DATABASE_URL aponta para ele (no Railway: \${{Postgres.DATABASE_URL}})."
+    exit 1
+  fi
+  sleep 1
+done
+echo "✅ Banco de dados conectado"
 echo "🗄️  Aplicando migrações..."
 npx prisma migrate deploy
 if [ "${SEED_DEMO:-true}" = "true" ]; then
