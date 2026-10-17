@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { signOut } from 'next-auth/react';
+import { Server } from 'lucide-react';
 import { Bell, ChevronDown, ChevronRight, LogOut, Menu as MenuIcon, Building2, Layers, Search, ExternalLink } from 'lucide-react';
 import { MENU } from './menu';
 import { MeContext, type Me } from './me';
@@ -162,6 +163,7 @@ function Topbar({ me, onMenu }: { me: Me; onMenu: () => void }) {
           <DropdownMenuLabel>{me.user.email}</DropdownMenuLabel>
           <DropdownMenuItem onSelect={() => window.open('/api/v1/openapi.json', '_blank')}><ExternalLink /> Especificação da API</DropdownMenuItem>
           <DropdownMenuSeparator />
+          {typeof navigator !== 'undefined' && navigator.userAgent.includes('GestaoProApp') && <DropdownMenuItem onSelect={() => { window.location.href = 'https://localhost/?trocar=1'; }}><Server /> Trocar servidor</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => signOut({ callbackUrl: '/login' })}><LogOut /> Sair</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

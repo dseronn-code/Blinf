@@ -1,0 +1,90 @@
+name: App Android (APK)
+
+# Gera o APK do GestãoPro e publica em Releases (link de download direto pelo celular).
+# Endereço padrão do servidor: variável do repositório GESTAOPRO_URL (Settings → Secrets and variables → Actions → Variables).
+# Assinatura de publicação opcional (Play Store): secrets ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD.
+on:
+  push:
+    paths: ['mobile/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mobile
+    env:
+      APP_VERSION_CODE: ${{ github.run_number }}
+      APP_VERSION_NAME: 1.0.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - name: Dependências
+        run: npm ci
+      - name: Configuração do app
+        env:
+          GESTAOPRO_URL: ${{ vars.GESTAOPRO_URL }}
+        run: |
+          printf "window.GESTAOPRO_CONFIG = { defaultServer: '%s', version: '%s' };\n" "$GESTAOPRO_URL" "$APP_VERSION_NAME" > www/config.js
+          cat www/config.js
+      - name: Sincronizar Capacitor
+        run: npx cap sync android
+      - name: Chave de publicação (opcional)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          fi
+      - name: Compilar APK
+        working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease bundleRelease
+          mkdir -p ../dist
+          cp app/build/outputs/apk/release/app-release.apk "../dist/GestaoPro-$APP_VERSION_NAME.apk"
+          cp app/build/outputs/apk/release/app-release.apk ../dist/GestaoPro.apk
+          cp app/build/outputs/bundle/release/app-release.aab "../dist/GestaoPro-$APP_VERSION_NAME.aab"
+          ls -la ../dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GestaoPro-${{ env.APP_VERSION_NAME }}
+          path: mobile/dist/*
+      - name: Publicar em Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-v${{ env.APP_VERSION_NAME }}
+          name: GestãoPro para Android ${{ env.APP_VERSION_NAME }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            **Instalar no celular:** abra esta página no Android, toque em **GestaoPro.apk**, depois em *Abrir* e permita "instalar apps desta fonte" quando o Android pedir.
+            Na primeira abertura, informe o endereço do seu GestãoPro (ex.: `https://erp.suaempresa.com.br` ou `http://192.168.0.10:3000` na mesma rede Wi-Fi).
+            O arquivo `.aab` é para publicar na Google Play.
+          files: |
+            mobile/dist/GestaoPro.apk
+            mobile/dist/GestaoPro-${{ env.APP_VERSION_NAME }}.apk
+            mobile/dist/GestaoPro-${{ env.APP_VERSION_NAME }}.aab

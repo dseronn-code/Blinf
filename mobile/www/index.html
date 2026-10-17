@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#16a34a" />
+  <title>GestãoPro</title>
+  <style>
+    :root { --g: #16a34a; --gd: #15803d; --bg: #f8fafc; --tx: #0f172a; --mu: #64748b; --bd: #e2e8f0; --er: #dc2626; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--tx); min-height: 100vh; display: flex; flex-direction: column; }
+    header { background: var(--g); color: #fff; padding: calc(env(safe-area-inset-top) + 28px) 24px 28px; }
+    .logo { width: 52px; height: 52px; border-radius: 14px; background: #fff; color: var(--g); font-weight: 900; font-size: 30px; display: flex; align-items: center; justify-content: center; margin-bottom: 14px; }
+    h1 { margin: 0; font-size: 24px; }
+    header p { margin: 6px 0 0; opacity: .9; font-size: 14px; }
+    main { flex: 1; padding: 24px; max-width: 520px; width: 100%; margin: 0 auto; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    input { width: 100%; height: 48px; border: 1px solid var(--bd); border-radius: 10px; padding: 0 14px; font-size: 16px; background: #fff; }
+    input:focus { outline: 2px solid var(--g); border-color: transparent; }
+    .hint { font-size: 12px; color: var(--mu); margin-top: 8px; line-height: 1.45; }
+    button { width: 100%; height: 50px; border: 0; border-radius: 10px; background: var(--g); color: #fff; font-size: 16px; font-weight: 600; margin-top: 18px; }
+    button:active { background: var(--gd); }
+    button[disabled] { opacity: .6; }
+    .err { color: var(--er); font-size: 13px; margin-top: 12px; min-height: 18px; }
+    .recent { margin-top: 22px; }
+    .recent h2 { font-size: 13px; color: var(--mu); font-weight: 600; margin: 0 0 8px; }
+    .chip { display: flex; justify-content: space-between; align-items: center; background: #fff; border: 1px solid var(--bd); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; font-size: 14px; }
+    .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chip b { color: var(--g); font-size: 13px; margin-left: 8px; }
+    .loading { position: fixed; inset: 0; background: var(--g); color: #fff; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font-size: 15px; }
+    .spin { width: 34px; height: 34px; border: 3px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: s 1s linear infinite; }
+    @keyframes s { to { transform: rotate(360deg); } }
+    footer { text-align: center; font-size: 11px; color: var(--mu); padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">G</div>
+    <h1>GestãoPro</h1>
+    <p>ERP para o seu negócio — vendas, estoque, notas e financeiro no celular.</p>
+  </header>
+  <main>
+    <form id="f">
+      <label for="url">Endereço do seu GestãoPro</label>
+      <input id="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" placeholder="https://erp.suaempresa.com.br" required />
+      <div class="hint">Informe o endereço onde o GestãoPro da sua empresa está instalado. Na mesma rede Wi-Fi do computador servidor, use o IP dele, por exemplo <b>http://192.168.0.10:3000</b>.</div>
+      <button id="go" type="submit">Conectar</button>
+      <div class="err" id="err"></div>
+    </form>
+    <div class="recent" id="recent"></div>
+  </main>
+  <div class="loading" id="loading"><div class="spin"></div><div id="loadingText">Conectando…</div></div>
+  <footer>Versão <span id="ver">1.0</span></footer>
+  <script src="config.js"></script>
+  <script>
+    // Tela inicial do app: guarda o endereço do servidor e abre o ERP em tela cheia.
+    var KEY = 'gp_server', RECENT = 'gp_servers';
+    var $ = function (id) { return document.getElementById(id); };
+    var params = new URLSearchParams(location.search);
+    var cfg = window.GESTAOPRO_CONFIG || {};
+    $('ver').textContent = cfg.version || '1.0';
+
+    function normalize(u) {
+      u = (u || '').trim().replace(/\/+$/, '');
+      if (u && !/^https?:\/\//i.test(u)) u = (/^(\d{1,3}\.){3}\d{1,3}(:\d+)?$|^localhost/.test(u) ? 'http://' : 'https://') + u;
+      return u;
+    }
+    function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+    function read(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    function recentList() { try { return JSON.parse(read(RECENT) || '[]'); } catch (e) { return []; } }
+    function remember(u) { var l = recentList().filter(function (x) { return x !== u; }); l.unshift(u); store(RECENT, JSON.stringify(l.slice(0, 5))); }
+
+    function check(u) {
+      // /api/health responde com CORS liberado; 8 s de limite
+      var ctrl = new AbortController();
+      var t = setTimeout(function () { ctrl.abort(); }, 8000);
+      return fetch(u + '/api/health', { signal: ctrl.signal, cache: 'no-store' })
+        .then(function (r) { clearTimeout(t); return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok && !j.status) throw new Error('HTTP ' + r.status); return j; }); })
+        .catch(function (e) { clearTimeout(t); throw new Error(e && e.name === 'AbortError' ? 'O servidor não respondeu a tempo.' : 'Não foi possível conectar a este endereço.'); });
+    }
+
+    function open(u, auto) {
+      $('err').textContent = '';
+      $('loading').style.display = 'flex';
+      $('loadingText').textContent = 'Conectando a ' + u.replace(/^https?:\/\//, '') + '…';
+      check(u).then(function (h) {
+        if (h.status && h.status !== 'ok') throw new Error('Servidor encontrado, mas o banco de dados está indisponível.');
+        store(KEY, u); remember(u);
+        location.replace(u + '/');
+      }).catch(function (e) {
+        $('loading').style.display = 'none';
+        $('url').value = u;
+        $('err').textContent = e.message + (auto ? ' Verifique a internet ou o endereço e tente novamente.' : ' Confira o endereço, a internet e se o servidor está ligado.');
+      });
+    }
+
+    function renderRecent() {
+      var l = recentList();
+      if (!l.length) { $('recent').innerHTML = ''; return; }
+      $('recent').innerHTML = '<h2>Usados recentemente</h2>' + l.map(function (u) { return '<div class="chip" data-u="' + u.replace(/"/g, '') + '"><span>' + u.replace(/</g, '') + '</span><b>Abrir</b></div>'; }).join('');
+      Array.prototype.forEach.call(document.querySelectorAll('.chip'), function (el) { el.onclick = function () { open(el.getAttribute('data-u')); }; });
+    }
+
+    $('f').onsubmit = function (e) { e.preventDefault(); var u = normalize($('url').value); if (u) open(u); };
+    renderRecent();
+
+    var saved = read(KEY);
+    var initial = saved || normalize(cfg.defaultServer || '');
+    if (initial) $('url').value = initial;
+    // ?trocar=1 vem do menu "Trocar servidor" dentro do ERP
+    if (initial && !params.get('trocar')) open(initial, true);
+  </script>
+</body>
+</html>

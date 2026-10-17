@@ -1,0 +1,28 @@
+{
+  "appId": "br.com.gestaopro.app",
+  "appName": "GestãoPro",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true,
+    "allowNavigation": [
+      "*"
+    ]
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 800,
+      "backgroundColor": "#16a34a",
+      "showSpinner": false
+    },
+    "CapacitorHttp": {
+      "enabled": false
+    }
+  },
+  "appendUserAgent": "GestaoProApp"
+}
