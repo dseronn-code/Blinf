@@ -13,6 +13,7 @@ import { verifyShopifyHmac, mapShopifyOrder, shopDomain } from '@/server/integra
 import { verifyWooSignature, mapWooOrder } from '@/server/integrations/providers/woocommerce';
 import { mapNuvemshopOrder } from '@/server/integrations/providers/nuvemshop';
 import { splitStreet, toUf, joinExternal } from '@/server/services/marketplace/mappers';
+import { getAdapter, type MkDraft, type MkInvoice } from '@/server/services/marketplace/types';
 
 const acc = (over: Partial<AccountCtx> = {}): AccountCtx => ({
   id: 'acc_test', companyId: 'cmp_test', provider: 'MERCADO_LIVRE', environment: 'PRODUCAO', status: 'CONECTADO',
@@ -301,5 +302,170 @@ describe.skipIf(process.env.RUN_DB_TESTS !== '1')('importação real de pedido M
     const third = await sync.realImportOrders(actor, ch, a);
     expect(third.results[0].action).toBe('ATUALIZADO');
     expect((await prisma.salesOrder.findUniqueOrThrow({ where: { id: order.id } })).status).toBe('CANCELADO');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criação de anúncios e NF-e para os canais (sem rede)
+// ---------------------------------------------------------------------------
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+const draft = (over: Partial<MkDraft> = {}): MkDraft => ({
+  orgId: 'org_test', title: 'Camiseta Dry Fit Masculina', description: '<p>Camiseta leve para corrida e academia, tecido com proteção UV.</p>', sku: 'CAM-DRY', gtin: null, brand: 'Atlética',
+  price: 99.9, quantity: 5, images: ['https://erp.exemplo.com/api/files/img1'], weight: 0.2, width: 20, height: 3, length: 30, listingType: 'gold_pro', categoryId: null, attributes: {},
+  variations: [
+    { sku: 'CAM-DRY-AZ-M', gtin: '7891234567895', price: 99.9, quantity: 3, attributes: { Cor: 'Azul', Tamanho: 'M' } },
+    { sku: 'CAM-DRY-AZ-G', gtin: null, price: 99.9, quantity: 2, attributes: { Cor: 'Azul', Tamanho: 'G' } },
+  ],
+  ...over,
+});
+const INVOICE: MkInvoice = { xml: '<nfeProc/>', number: 1234, series: 1, accessKey: '35261011444777000161550010000012341000012345', issueDate: new Date('2026-10-16T13:00:00Z'), total: 284.6, productsTotal: 259.7, cfop: '5.102', danfeUrl: 'https://www.nfe.fazenda.gov.br/portal/consulta?nfe=3526' };
+
+describe('criação de anúncios', () => {
+  it('Mercado Livre: categoria prevista, atributos obrigatórios, variações com SELLER_SKU e descrição', async () => {
+    const calls: HttpRequest[] = [];
+    setHttpMock((req) => {
+      calls.push(req);
+      const u = new URL(req.url);
+      if (u.pathname === '/sites/MLB/domain_discovery/search') return { data: [{ domain_id: 'MLB-T_SHIRTS', domain_name: 'Camisetas', category_id: 'MLB31447', category_name: 'Camisetas' }] };
+      if (u.pathname === '/categories/MLB31447/attributes') return { data: [
+        { id: 'BRAND', name: 'Marca', tags: { required: true } },
+        { id: 'MODEL', name: 'Modelo', tags: { required: true } },
+        { id: 'GTIN', name: 'Código universal de produto', tags: { conditional_required: true } },
+        { id: 'COLOR', name: 'Cor', tags: { allow_variations: true }, values: [{ id: '52028', name: 'Azul' }] },
+        { id: 'SIZE', name: 'Tamanho', tags: { allow_variations: true } },
+      ] };
+      if (u.pathname === '/items' && req.method === 'POST') {
+        const b = req.body as any;
+        return { status: 201, data: { id: 'MLB5550001', title: b.title, price: b.price, status: 'active', listing_type_id: b.listing_type_id, permalink: 'https://produto.mercadolivre.com.br/MLB-5550001', variations: b.variations.map((v: any, i: number) => ({ id: 1000 + i, price: v.price, available_quantity: v.available_quantity, attribute_combinations: v.attribute_combinations })) } };
+      }
+      if (u.pathname === '/items/MLB5550001/description') return { status: 201, data: { plain_text: (req.body as any).plain_text } };
+      return { status: 404, data: { message: 'not_found' } };
+    });
+    const list = await getAdapter('MERCADO_LIVRE')!.createListing!(acc(), draft());
+    const post = calls.find((c) => c.url.endsWith('/items') && c.method === 'POST')!;
+    const b = post.body as any;
+    expect(post.headers?.Authorization).toBe('Bearer APP_USR-123');
+    expect(b).toMatchObject({ title: 'Camiseta Dry Fit Masculina', category_id: 'MLB31447', price: 99.9, currency_id: 'BRL', buying_mode: 'buy_it_now', listing_type_id: 'gold_pro', condition: 'new' });
+    expect(b.available_quantity).toBeUndefined();
+    expect(b.pictures).toEqual([{ source: 'https://erp.exemplo.com/api/files/img1' }]);
+    expect(b.attributes).toEqual(expect.arrayContaining([{ id: 'BRAND', value_name: 'Atlética' }, { id: 'MODEL', value_name: 'CAM-DRY' }, { id: 'ITEM_CONDITION', value_id: '2230284' }]));
+    expect(b.variations).toHaveLength(2);
+    expect(b.variations[0]).toMatchObject({ price: 99.9, available_quantity: 3 });
+    expect(b.variations[0].attribute_combinations).toEqual([{ id: 'COLOR', value_id: '52028', name: 'Cor' }, { id: 'SIZE', value_name: 'M', name: 'Tamanho' }]);
+    expect(b.variations[0].attributes).toEqual([{ id: 'SELLER_SKU', value_name: 'CAM-DRY-AZ-M' }, { id: 'GTIN', value_name: '7891234567895' }]);
+    expect(b.variations[1].attributes).toEqual([{ id: 'SELLER_SKU', value_name: 'CAM-DRY-AZ-G' }]);
+    const desc = calls.find((c) => c.url.endsWith('/items/MLB5550001/description'))!;
+    expect((desc.body as any).plain_text).toBe('Camiseta leve para corrida e academia, tecido com proteção UV.');
+    expect(list.map((l) => [l.externalId, l.sku, l.listingType])).toEqual([['MLB5550001/1000', 'CAM-DRY-AZ-M', 'Premium'], ['MLB5550001/1001', 'CAM-DRY-AZ-G', 'Premium']]);
+  });
+
+  it('Mercado Livre: erro de validação volta com a mensagem do canal', async () => {
+    setHttpMock((req) => {
+      const u = new URL(req.url);
+      if (u.pathname.startsWith('/categories/')) return { data: [] };
+      return { status: 400, data: { message: 'Validation error', error: 'validation_error', status: 400, cause: [{ type: 'error', code: 'item.attributes.missing_required', message: 'The attributes [MODEL] are required for category MLB1055.' }, { type: 'warning', message: 'aviso' }] } };
+    });
+    await expect(getAdapter('MERCADO_LIVRE')!.createListing!(acc(), draft({ categoryId: 'MLB1055', variations: [] }))).rejects.toThrow('Mercado Livre: The attributes [MODEL] are required for category MLB1055.');
+  });
+
+  it('Shopee: add_item assinado com logística, imagem enviada e variações (init_tier_variation)', async () => {
+    process.env.SHOPEE_PARTNER_ID = '2001887';
+    process.env.SHOPEE_PARTNER_KEY = 'chave-parceiro';
+    const sacc = acc({ provider: 'SHOPEE', secrets: { accessToken: 'tokenABC' }, externalAccountId: '123456' });
+    const calls: HttpRequest[] = [];
+    setHttpMock((req) => {
+      calls.push(req);
+      const u = new URL(req.url);
+      if (u.pathname === '/api/v2/media_space/upload_image') return { data: { error: '', message: '', response: { image_info: { image_id: 'br-11134207-img1', image_url_list: [] } } } };
+      if (u.pathname === '/api/v2/logistics/get_channel_list') return { data: { error: '', response: { logistics_channel_list: [{ logistics_channel_id: 90001, logistics_channel_name: 'Shopee Xpress', enabled: true, mask_channel_id: 0 }, { logistics_channel_id: 90002, enabled: false }] } } };
+      if (u.pathname === '/api/v2/product/add_item') return { data: { error: '', response: { item_id: 777001 } } };
+      if (u.pathname === '/api/v2/product/init_tier_variation') return { data: { error: '', response: { item_id: 777001, model: [{ model_id: 9001, model_sku: 'CAM-DRY-AZ-M', tier_index: [0, 0] }, { model_id: 9002, model_sku: 'CAM-DRY-AZ-G', tier_index: [0, 1] }] } } };
+      return { status: 404, data: { error: 'not_found' } };
+    });
+    // Sem categoria: erro claro pedindo a categoria
+    await expect(getAdapter('SHOPEE')!.createListing!(sacc, draft({ images: [PNG] }))).rejects.toThrow(/informe a categoria/);
+    const list = await getAdapter('SHOPEE')!.createListing!(sacc, draft({ images: [PNG], categoryId: '100017' }));
+
+    const add = calls.find((c) => c.url.includes('/api/v2/product/add_item'))!;
+    const u = new URL(add.url);
+    const ts = Number(u.searchParams.get('timestamp'));
+    expect(u.searchParams.get('sign')).toBe(shopeeSign('chave-parceiro', '2001887', '/api/v2/product/add_item', ts, 'tokenABC', '123456'));
+    expect(u.searchParams.get('shop_id')).toBe('123456');
+    expect(add.body).toMatchObject({ item_name: 'Camiseta Dry Fit Masculina', category_id: 100017, original_price: 99.9, item_sku: 'CAM-DRY', condition: 'NEW', image: { image_id_list: ['br-11134207-img1'] }, logistic_info: [{ logistic_id: 90001, enabled: true }], weight: 0.2, dimension: { package_length: 30, package_width: 20, package_height: 3 } });
+    // Upload de imagem: multipart, assinado como chamada pública
+    const up = calls.find((c) => c.url.includes('/media_space/upload_image'))!;
+    expect(up.headers?.['Content-Type']).toMatch(/^multipart\/form-data; boundary=/);
+    expect(new URL(up.url).searchParams.has('access_token')).toBe(false);
+    const tiers = calls.find((c) => c.url.includes('/init_tier_variation'))!.body as any;
+    expect(tiers.tier_variation).toEqual([{ name: 'Cor', option_list: [{ option: 'Azul' }] }, { name: 'Tamanho', option_list: [{ option: 'M' }, { option: 'G' }] }]);
+    expect(tiers.model[1]).toMatchObject({ tier_index: [0, 1], model_sku: 'CAM-DRY-AZ-G', seller_stock: [{ stock: 2 }] });
+    expect(list.map((l) => l.externalId)).toEqual(['777001/9001', '777001/9002']);
+  });
+
+  it('pausar/ativar e título usam a API de cada canal', async () => {
+    const calls: HttpRequest[] = [];
+    setHttpMock((req) => { calls.push(req); return { data: {} }; });
+    await getAdapter('MERCADO_LIVRE')!.editListing!(acc(), 'MLB5550001/1000', { active: false });
+    expect(calls[0]).toMatchObject({ method: 'PUT', url: 'https://api.mercadolibre.com/items/MLB5550001', body: { status: 'paused' } });
+    await getAdapter('SHOPIFY')!.editListing!(acc({ provider: 'SHOPIFY', secrets: { accessToken: 'shpat_x' }, settings: { shopDomain: 'minhaloja' } }), '11/22/33', { active: true, title: 'Novo' });
+    expect(calls[1]).toMatchObject({ method: 'PUT', url: 'https://minhaloja.myshopify.com/admin/api/2024-07/products/11.json', body: { product: { id: 11, status: 'active', title: 'Novo' } } });
+    await getAdapter('WOOCOMMERCE')!.editListing!(acc({ provider: 'WOOCOMMERCE', secrets: { consumerKey: 'ck', consumerSecret: 'cs' }, settings: { storeUrl: 'https://loja.com.br' } }), '9/10', { active: false });
+    expect(calls[2]).toMatchObject({ method: 'PUT', url: 'https://loja.com.br/wp-json/wc/v3/products/9', body: { status: 'draft' } });
+  });
+});
+
+describe('NF-e enviada aos canais', () => {
+  it('Shopify: metafields do pedido no namespace nfe', async () => {
+    const calls: HttpRequest[] = [];
+    setHttpMock((req) => { calls.push(req); return { status: 201, data: { metafield: { id: 1 } } }; });
+    await getAdapter('SHOPIFY')!.uploadInvoice!(acc({ provider: 'SHOPIFY', secrets: { accessToken: 'shpat_x' }, settings: { shopDomain: 'minhaloja.myshopify.com' } }), { externalId: '5001' }, INVOICE);
+    expect(calls.every((c) => c.method === 'POST' && c.url === 'https://minhaloja.myshopify.com/admin/api/2024-07/orders/5001/metafields.json')).toBe(true);
+    expect(calls[0].headers?.['X-Shopify-Access-Token']).toBe('shpat_x');
+    expect(calls.map((c) => (c.body as any).metafield)).toEqual([
+      { namespace: 'nfe', key: 'chave', type: 'single_line_text_field', value: INVOICE.accessKey },
+      { namespace: 'nfe', key: 'numero', type: 'single_line_text_field', value: '1234' },
+      { namespace: 'nfe', key: 'serie', type: 'single_line_text_field', value: '1' },
+      { namespace: 'nfe', key: 'url_danfe', type: 'url', value: INVOICE.danfeUrl },
+    ]);
+  });
+
+  it('WooCommerce: meta_data _nfe_chave/_nfe_numero e nota no pedido', async () => {
+    const calls: HttpRequest[] = [];
+    setHttpMock((req) => { calls.push(req); return { data: { id: 727 } }; });
+    await getAdapter('WOOCOMMERCE')!.uploadInvoice!(acc({ provider: 'WOOCOMMERCE', secrets: { consumerKey: 'ck', consumerSecret: 'cs' }, settings: { storeUrl: 'https://loja.com.br/' } }), { externalId: '727' }, INVOICE);
+    expect(calls[0]).toMatchObject({ method: 'PUT', url: 'https://loja.com.br/wp-json/wc/v3/orders/727' });
+    expect((calls[0].body as any).meta_data).toEqual(expect.arrayContaining([{ key: '_nfe_chave', value: INVOICE.accessKey }, { key: '_nfe_numero', value: '1234' }, { key: '_nfe_serie', value: '1' }]));
+    expect(calls[1]).toMatchObject({ method: 'POST', url: 'https://loja.com.br/wp-json/wc/v3/orders/727/notes', body: { customer_note: false } });
+    expect((calls[1].body as any).note).toContain(INVOICE.accessKey);
+  });
+
+  it('Shopee: add_invoice_data com número, série, chave, data e valores', async () => {
+    const calls: HttpRequest[] = [];
+    setHttpMock((req) => { calls.push(req); return { data: { error: '', message: '', response: {} } }; });
+    await getAdapter('SHOPEE')!.uploadInvoice!(acc({ provider: 'SHOPEE', secrets: { accessToken: 'tokenABC' }, externalAccountId: '123456' }), { externalId: '241016ABCDEF' }, INVOICE);
+    const c = calls.find((x) => x.url.includes('/api/v2/order/add_invoice_data'))!;
+    expect(c.body).toEqual({ order_sn: '241016ABCDEF', invoice_data: { number: '1234', series_number: '1', access_key: INVOICE.accessKey, issue_date: 1792155600, total_value: 284.6, products_total_value: 259.7, tax_code: '5102' } });
+  });
+});
+
+describe.skipIf(process.env.RUN_DB_TESTS !== '1')('edição de anúncio real (banco)', () => {
+  it('reverte o registro local quando a API recusa e grava quando aceita', async () => {
+    const { prisma } = await import('@/lib/db');
+    const { editRealListing } = await import('@/server/services/marketplace/listings');
+    const company = await prisma.company.findFirstOrThrow({ where: { cnpj: '11444777000161' } });
+    const product = await prisma.product.findFirstOrThrow({ where: { organizationId: company.organizationId, kind: 'SIMPLES', active: true } });
+    const ch = await prisma.salesChannel.create({ data: { companyId: company.id, provider: 'MERCADO_LIVRE', name: 'ML (teste edição)', status: 'CONECTADO', config: { realAccountId: 'acc_teste_db' } } });
+    try {
+      const l = await prisma.listing.create({ data: { channelId: ch.id, productId: product.id, externalId: 'MLB7770001', title: 'Teste', price: 50, stock: 3 } });
+      setHttpMock(() => ({ status: 400, data: { message: 'Validation error', cause: [{ type: 'error', message: 'Price is lower than allowed' }] } }));
+      await expect(editRealListing(ch, acc({ companyId: company.id }), l.id, { price: 1 })).rejects.toThrow('Price is lower than allowed');
+      expect((await prisma.listing.findUniqueOrThrow({ where: { id: l.id } })).price).toBe(50);
+      setHttpMock(() => ({ data: {} }));
+      await editRealListing(ch, acc({ companyId: company.id }), l.id, { status: 'PAUSADO', price: 55 });
+      expect(await prisma.listing.findUniqueOrThrow({ where: { id: l.id } })).toMatchObject({ price: 55, status: 'PAUSADO' });
+    } finally {
+      setHttpMock(null);
+      await prisma.salesChannel.delete({ where: { id: ch.id } }).catch(() => {});
+    }
   });
 });

@@ -64,7 +64,8 @@ export type ShipPurchase = {
   from: ShipParty;
   to: ShipParty;
   products: { name: string; quantity: number; unitValue: number }[];
-  volume: { weight: number; height: number; width: number; length: number };
+  /** count = quantidade de volumes (peso dividido igualmente) */
+  volume: { weight: number; height: number; width: number; length: number; count?: number };
   value: number;
   invoiceKey?: string | null;
   invoiceNumber?: number | null;
@@ -84,6 +85,7 @@ function meParty(p: ShipParty, company = false) {
 
 /** Corpo do POST /api/v2/me/cart */
 export function meCartBody(acc: Pick<AccountCtx, 'settings'>, p: ShipPurchase) {
+  const n = Math.max(1, Math.floor(p.volume.count || 1));
   return {
     service: Number(p.serviceId),
     // Jadlog, Azul Cargo e Latam exigem agência de postagem — Conferir na documentação: lista em /api/v2/me/shipment/agencies
@@ -91,7 +93,8 @@ export function meCartBody(acc: Pick<AccountCtx, 'settings'>, p: ShipPurchase) {
     from: meParty(p.from, true),
     to: meParty(p.to),
     products: p.products.map((i) => ({ name: i.name.slice(0, 100), quantity: i.quantity, unitary_value: Math.round(i.unitValue * 100) / 100 })),
-    volumes: [{ height: Math.max(2, Math.round(p.volume.height)), width: Math.max(11, Math.round(p.volume.width)), length: Math.max(16, Math.round(p.volume.length)), weight: Math.max(0.1, p.volume.weight) }],
+    // Conferir na documentação: Correios aceitam um volume por etiqueta; transportadoras (Jadlog etc.) aceitam vários
+    volumes: Array.from({ length: n }, () => ({ height: Math.max(2, Math.round(p.volume.height)), width: Math.max(11, Math.round(p.volume.width)), length: Math.max(16, Math.round(p.volume.length)), weight: Math.max(0.1, Math.round((p.volume.weight / n) * 1000) / 1000) })),
     options: {
       insurance_value: Math.round(p.value * 100) / 100, receipt: !!acc.settings.receipt, own_hand: !!acc.settings.ownHand, reverse: false, non_commercial: !p.invoiceKey,
       ...(p.invoiceKey ? { invoice: { key: p.invoiceKey } } : {}), platform: 'GestãoPro', ...(p.orderNumber ? { tags: [{ tag: String(p.orderNumber), url: null }] } : {}),
@@ -167,6 +170,7 @@ registerProvider({
     { key: 'agency', label: 'Agência de postagem (Jadlog/Azul/Latam)', type: 'number', help: 'ID da agência — necessário para transportadoras que exigem postagem em agência própria.' },
     { key: 'services', label: 'Serviços cotados', placeholder: '1,2,3,4,17', help: 'IDs de serviços separados por vírgula (vazio = todos os habilitados na sua conta).' },
     { key: 'autoBuy', label: 'Comprar etiqueta automaticamente ao faturar', type: 'switch', help: 'Desligado: o envio fica "aguardando compra" e a etiqueta é comprada em Logística → Envios.' },
+    { key: 'rebuyOnVolumes', label: 'Recomprar etiqueta ao alterar volumes', type: 'switch', help: 'Ligado: alterar volumes/peso de um envio com etiqueta já comprada cancela a etiqueta e compra outra automaticamente. Desligado: o sistema pede para cancelar e comprar novamente.' },
     { key: 'receipt', label: 'Aviso de recebimento (AR)', type: 'switch' },
     { key: 'ownHand', label: 'Mão própria', type: 'switch' },
     { key: 'webhookSecret', label: 'Segredo do webhook (app)', secret: true, help: 'Opcional: secret do aplicativo para validar X-ME-Signature das notificações de rastreio.' },

@@ -4,7 +4,7 @@ import { setHttpMock } from '@/server/integrations/http';
 import { soapEnvelope, soapContentType } from '@/server/services/sefaz/soap';
 import { sefazUrl, authorizerFor, svcFor, anUrl, nfseNacionalBase } from '@/server/services/sefaz/urls';
 import { nfceQrParam, nfceQrCode, cscIdToken } from '@/server/services/sefaz/qrcode';
-import { buildEvento, buildInutNFe, buildEnviNFe, buildDistDFeInt, parseAutorizacao, parseEvento, parseDistDFe, autorizar, detCancelamento, detCCe, CCE_COND, buildNfeProc, type SefazCtx } from '@/server/services/sefaz/nfe';
+import { buildEvento, buildInutNFe, buildEnviNFe, buildDistDFeInt, parseAutorizacao, parseEvento, parseDistDFe, autorizar, enviarEvento, consultarProtocolo, authorizerOfKey, consultarRecibo, detCancelamento, detCCe, CCE_COND, buildNfeProc, type SefazCtx } from '@/server/services/sefaz/nfe';
 import { canonicalOf, gzipB64, NS, dhUF } from '@/server/services/sefaz/xml';
 import { buildXml, extractSignedParts } from '@/server/services/fiscal';
 import { buildDps, cTribNac, dpsId } from '@/server/services/nfse';
@@ -218,5 +218,59 @@ describe('NFS-e Nacional (DPS) e GNRE', () => {
     expect(lote).toContain('<receita>100102</receita>');
     expect(lote).toContain('<valor tipo="11">123.45</valor>');
     expect(lote).toContain('<municipio>50308</municipio>');
+  });
+});
+
+describe('Contingência SVC — eventos e consulta no mesmo autorizador', () => {
+  const SVC_KEY = KEY.slice(0, 34) + '6' + KEY.slice(35); // tpEmis 6 = SVC-AN
+  const retEv = (cStat: string, xMotivo: string) => soapResp(`<retEnvEvento versao="1.00"><cStat>128</cStat><xMotivo>Lote processado</xMotivo><retEvento versao="1.00"><infEvento><cStat>${cStat}</cStat><xMotivo>${xMotivo}</xMotivo><nProt>135260000000888</nProt></infEvento></retEvento></retEnvEvento>`, 'NFeRecepcaoEvento4');
+  const svcUrl = sefazUrl('SP', 55, 'NFeRecepcaoEvento4', 2, 'SVC-AN');
+  const spUrl = sefazUrl('SP', 55, 'NFeRecepcaoEvento4', 2);
+
+  it('autorizador pela chave: 6 → SVC-AN, 7 → SVC-RS, 1/9 → SEFAZ da UF', () => {
+    expect(authorizerOfKey(SVC_KEY)).toBe('SVC-AN');
+    expect(authorizerOfKey(KEY.slice(0, 34) + '7' + KEY.slice(35))).toBe('SVC-RS');
+    expect(authorizerOfKey(KEY)).toBeUndefined();
+    expect(authorizerOfKey(KEY.slice(0, 34) + '9' + KEY.slice(35))).toBeUndefined();
+  });
+
+  it('cancelamento/CC-e de NF-e autorizada na SVC vão para a SVC enquanto ativa', async () => {
+    const calls: string[] = [];
+    setHttpMock((req) => { calls.push(req.url); return { status: 200, text: retEv('135', 'Evento registrado e vinculado a NF-e') }; });
+    const r = await enviarEvento(ctx, 55, { chNFe: SVC_KEY, tpEvento: '110111', det: detCancelamento('135260000000001', 'Cancelamento por erro de digitacao') });
+    expect(calls).toEqual([svcUrl]);
+    expect(r).toMatchObject({ ok: true, authorizer: 'SVC-AN' });
+    calls.length = 0;
+    await enviarEvento(ctx, 55, { chNFe: SVC_KEY, tpEvento: '110110', det: detCCe('Correcao do endereco de entrega') });
+    expect(calls).toEqual([svcUrl]);
+    calls.length = 0;
+    // Nota normal: SEFAZ da UF
+    await enviarEvento(ctx, 55, { chNFe: KEY, tpEvento: '110111', det: detCancelamento('1', 'Cancelamento por erro de digitacao') });
+    expect(calls).toEqual([spUrl]);
+  });
+
+  it('SVC desabilitada (114, contingência encerrada) → reenvia à SEFAZ da UF', async () => {
+    const calls: string[] = [];
+    setHttpMock((req) => {
+      calls.push(req.url);
+      return { status: 200, text: req.url === svcUrl ? soapResp('<retEnvEvento versao="1.00"><cStat>114</cStat><xMotivo>Rejeicao: SVC-AN desabilitada pela SEFAZ de Origem</xMotivo></retEnvEvento>', 'NFeRecepcaoEvento4') : retEv('135', 'Evento registrado') };
+    });
+    const r = await enviarEvento(ctx, 55, { chNFe: SVC_KEY, tpEvento: '110111', det: detCancelamento('1', 'Cancelamento por erro de digitacao') });
+    expect(calls).toEqual([svcUrl, spUrl]);
+    expect(r).toMatchObject({ ok: true, authorizer: null });
+  });
+
+  it('nota em processamento enviada à SVC: recibo e protocolo consultados na SVC', async () => {
+    const calls: string[] = [];
+    setHttpMock((req) => {
+      calls.push(req.url);
+      if (req.url.includes('RetAutorizacao') || req.url.toLowerCase().includes('retautorizacao')) return { status: 200, text: soapResp(`<retConsReciNFe><cStat>104</cStat><xMotivo>Lote processado</xMotivo>${prot('100', 'Autorizado o uso da NF-e')}</retConsReciNFe>`, 'NFeRetAutorizacao4') };
+      return { status: 200, text: soapResp(`<retConsSitNFe versao="4.00"><cStat>100</cStat><xMotivo>Autorizado</xMotivo>${prot('100', 'Autorizado o uso da NF-e')}</retConsSitNFe>`, 'NFeConsultaProtocolo4') };
+    });
+    const a = authorizerOfKey(SVC_KEY);
+    expect((await consultarRecibo(ctx, 55, '351000000000123', a)).status).toBe('AUTORIZADA');
+    expect((await consultarProtocolo(ctx, 55, SVC_KEY, a)).prot?.status).toBe('AUTORIZADA');
+    expect(calls).toEqual([sefazUrl('SP', 55, 'NFeRetAutorizacao4', 2, 'SVC-AN'), sefazUrl('SP', 55, 'NFeConsultaProtocolo4', 2, 'SVC-AN')]);
+    expect(calls.every((u) => !u.includes('fazenda.sp.gov.br'))).toBe(true);
   });
 });

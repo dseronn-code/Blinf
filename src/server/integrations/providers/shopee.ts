@@ -36,7 +36,8 @@ export function shopeeUrl(acc: AccountCtx | null, path: string, query: Record<st
 }
 
 async function sp<T = any>(acc: AccountCtx, path: string, opts: { query?: Record<string, string | number>; body?: unknown; headers?: Record<string, string>; shop?: boolean } = {}) {
-  const res = await httpRequest<T>({ provider: P, companyId: acc.companyId, url: shopeeUrl(acc, path, opts.query, opts.shop ?? true), method: opts.body ? 'POST' : 'GET', body: opts.body, headers: opts.headers });
+  // Corpo binário (multipart) não vai para o registro de chamadas
+  const res = await httpRequest<T>({ provider: P, companyId: acc.companyId, url: shopeeUrl(acc, path, opts.query, opts.shop ?? true), method: opts.body ? 'POST' : 'GET', body: opts.body, headers: opts.headers, redactRequest: Buffer.isBuffer(opts.body) });
   const d = ensureOk(res, 'Shopee').data as any;
   if (d?.error) throw new IntegrationError(`Shopee: ${d.message || d.error}`, res.status, d);
   return d as T;

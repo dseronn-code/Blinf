@@ -4,7 +4,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, Save, FileText, XCircle, Printer, Truck, PackageCheck, CheckCircle2, MoreHorizontal, Zap, Receipt, Undo2, Split } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApi, useAction, openFile } from '@/lib/api';
+import { useApi, useAction, openFile, api } from '@/lib/api';
 import { Dialog } from '@/components/ui/dialog';
 import { PageHeader, Field, DataTable, KV } from '@/components/common/page';
 import { EntityPicker, contactOption } from '@/components/common/picker';
@@ -35,6 +35,7 @@ export default function SalesOrderPage() {
   const [busy, setBusy] = useState(false);
   const [retOpen, setRetOpen] = useState(false);
   const [splitOpen, setSplitOpen] = useState(false);
+  const [shipOpen, setShipOpen] = useState(false);
   useEffect(() => {
     if (!data) return;
     setO({ ...data, date: toInputDate(data.date), expectedDate: toInputDate(data.expectedDate), customerLabel: data.customer.name });
@@ -85,7 +86,7 @@ export default function SalesOrderPage() {
                 {o.status !== 'CANCELADO' && !o.stockPosted && <DropdownMenuItem onSelect={() => run('post-stock', {}, 'Saída de estoque lançada')}>Lançar estoque</DropdownMenuItem>}
                 {o.status !== 'CANCELADO' && !o.financialPosted && <DropdownMenuItem onSelect={() => run('post-financial', {}, 'Contas a receber lançadas')}>Lançar contas a receber</DropdownMenuItem>}
                 {!o.commissionPosted && o.sellerId && o.status !== 'ABERTO' && <DropdownMenuItem onSelect={() => run('commission', {}, 'Comissão calculada')}>Calcular comissão</DropdownMenuItem>}
-                {['FATURADO', 'SEPARADO'].includes(o.status) && !shipment && <DropdownMenuItem onSelect={() => run('shipment', {}, 'Etiqueta gerada')}><Truck /> Gerar etiqueta de envio</DropdownMenuItem>}
+                {['FATURADO', 'SEPARADO'].includes(o.status) && !shipment && <DropdownMenuItem onSelect={() => setShipOpen(true)}><Truck /> Gerar etiqueta de envio</DropdownMenuItem>}
                 {o.status === 'SEPARADO' && <DropdownMenuItem onSelect={() => run('status', { status: 'ENVIADO' }, 'Pedido enviado')}>Marcar como enviado</DropdownMenuItem>}
                 {o.status === 'ENVIADO' && <DropdownMenuItem onSelect={() => run('status', { status: 'ENTREGUE' }, 'Pedido entregue')}>Marcar como entregue</DropdownMenuItem>}
                 <DropdownMenuSeparator />
@@ -164,6 +165,7 @@ export default function SalesOrderPage() {
       </div>
       <PromptDialog open={cancel} onOpenChange={setCancel} destructive title="Cancelar pedido" description="Notas autorizadas serão canceladas na SEFAZ (simulada), a reserva/estoque será estornada e as contas em aberto canceladas." label="Justificativa (mín. 15 caracteres)" minLength={15} confirmText="Cancelar pedido" onConfirm={(reason) => run('cancel', { reason }, 'Pedido cancelado')} />
       {!isNew && data && <ReturnDialog open={retOpen} onOpenChange={setRetOpen} order={data} />}
+      {!isNew && data && shipOpen && <ShipmentDialog order={data} onClose={() => setShipOpen(false)} />}
       {!isNew && data && <SplitDialog open={splitOpen} onOpenChange={setSplitOpen} order={data} onDone={(nid) => router.push(`/vendas/${nid}`)} />}
     </div>
   );
@@ -289,6 +291,52 @@ function SplitDialog({ open, onOpenChange, order, onDone }: { open: boolean; onO
         </div>
       </Card>
       {invalid && <p className="mt-2 text-xs text-red-600">Quantidade maior que a do pedido.</p>}
+    </Dialog>
+  );
+}
+
+/** Gerar etiqueta: cota o frete do pedido e envia a opção escolhida (com conta real conectada, a etiqueta é comprada na hora) */
+function ShipmentDialog({ order, onClose }: { order: any; onClose: () => void }) {
+  const act = useAction();
+  const [q, setQ] = useState<{ real: boolean; options: any[]; errors: string[]; package?: any } | null>(null);
+  const [error, setError] = useState('');
+  const [sel, setSel] = useState(0);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api<any>('/api/logistics/quote', { method: 'POST', json: { orderId: order.id } })
+      .then((r) => { setQ(r); const i = r.options.findIndex((x: any) => order.shippingService && x.service.startsWith(order.shippingService)); setSel(Math.max(i, 0)); })
+      .catch((e) => setError((e as Error).message));
+  }, [order.id, order.shippingService]);
+  const opt = q?.options[sel];
+  const submit = async () => {
+    if (!opt) return;
+    setBusy(true);
+    const r = await act('POST', `/api/sales-orders/${order.id}/shipment`, { option: { provider: opt.provider, carrier: opt.carrier, service: opt.service, serviceId: opt.serviceId } }, opt.simulated ? 'Etiqueta gerada' : 'Etiqueta comprada');
+    setBusy(false);
+    if (r !== undefined) onClose();
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()} size="lg" title={`Etiqueta de envio — pedido nº ${order.number}`}
+      description={q?.package ? `Pacote: ${num(q.package.weight, 3)} kg · ${q.package.length}×${q.package.width}×${q.package.height} cm` : 'Cotando o frete…'}
+      footer={<><Button variant="outline" onClick={onClose}>Voltar</Button><Button disabled={busy || !opt} onClick={submit}><Truck /> {opt && !opt.simulated ? `Comprar etiqueta (${money(opt.price)})` : 'Gerar etiqueta'}</Button></>}>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {!q && !error && <p className="text-sm text-muted-foreground">Consultando transportadoras…</p>}
+      {q && (
+        <div className="space-y-2">
+          {!q.real && <p className="rounded-md border bg-muted/40 p-2 text-xs">Cotação simulada — conecte Melhor Envio ou Correios em Integrações → Contas para comprar etiquetas reais.</p>}
+          {q.errors?.length > 0 && <p className="text-xs text-amber-700">{q.errors.join(' · ')}</p>}
+          {q.options.map((x: any, i: number) => (
+            <label key={i} className={cn('flex cursor-pointer items-center gap-3 rounded-md border p-2 text-sm', i === sel && 'border-primary bg-primary/5')}>
+              <input type="radio" checked={i === sel} onChange={() => setSel(i)} />
+              <span className="flex-1"><b>{x.carrier}</b> {x.service} {x.simulated ? <Badge tone="gray">simulado</Badge> : <Badge tone="green">{x.provider === 'CORREIOS' ? 'Correios' : 'Melhor Envio'}</Badge>}</span>
+              <span className="text-muted-foreground">{x.deadlineDays} dia(s)</span>
+              <span className="w-24 text-right font-medium tabular-nums">{money(x.price)}</span>
+            </label>
+          ))}
+          {!q.options.length && <p className="text-sm text-muted-foreground">Nenhuma opção de frete para este destino.</p>}
+          {opt && !opt.simulated && <p className="text-xs text-muted-foreground">A etiqueta será comprada agora na conta conectada e o valor debitado do saldo da transportadora/intermediador.</p>}
+        </div>
+      )}
     </Dialog>
   );
 }

@@ -109,6 +109,10 @@ export async function setShipmentVolumes(actor: Actor, shipmentId: string, volum
   const s = await prisma.shipment.findFirst({ where: { id: shipmentId, companyId: actor.companyId } });
   if (!s) fail(404, 'Envio não encontrado');
   if (!(volumes >= 1 && volumes <= 99)) fail(400, 'Quantidade de volumes inválida (1 a 99)');
+  // Etiqueta já comprada no provedor: erro "cancele e compre novamente" ou recompra automática (Melhor Envio)
+  const { changePurchasedVolumes } = await import('./logistics');
+  const changed = await changePurchasedVolumes(actor, s!, { volumes: Math.floor(volumes), weight });
+  if (changed) return changed;
   return prisma.shipment.update({ where: { id: shipmentId }, data: { volumes: Math.floor(volumes), ...(weight ? { weight: Number(weight) } : {}) } });
 }
 

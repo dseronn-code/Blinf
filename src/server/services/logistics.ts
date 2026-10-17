@@ -7,7 +7,7 @@
 import { PDFDocument } from 'pdf-lib';
 import type { Shipment, SalesOrder, Company } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { round2, onlyDigits, addDays } from '@/lib/utils';
+import { round2, onlyDigits, addDays, num } from '@/lib/utils';
 import { buildTrackingCode, cepRegion } from '@/lib/br';
 import { fail } from '../errors';
 import { emit } from '../events';
@@ -156,7 +156,7 @@ async function purchaseData(s: Shipment, serviceId: string): Promise<ShipPurchas
     from: { name: company!.tradeName || company!.name, phone: company!.phone, email: company!.email, document: company!.cnpj, ie: company!.ie, street: company!.street, number: company!.number, district: company!.district, city: company!.city, uf: company!.uf, zip: company!.zip },
     to: { name: to.name || c.name, phone: c.mobile || c.phone, email: c.email, document: c.document, ie: c.ie, street: to.street || c.street, number: to.number || c.number, complement: to.complement || c.complement, district: to.district || c.district, city: to.city || c.city, uf: to.uf || c.uf, zip: to.zip || c.zip },
     products: order!.items.filter((i) => i.productId).map((i) => ({ name: i.description, quantity: i.quantity, unitValue: i.unitPrice })),
-    volume: { weight: s.weight, height: s.height, width: s.width, length: s.length },
+    volume: { weight: s.weight, height: s.height, width: s.width, length: s.length, count: s.volumes || 1 },
     value: order!.total,
     invoiceKey: inv?.accessKey || null,
     invoiceNumber: inv?.number || null,
@@ -205,6 +205,28 @@ export async function cancelShipment(actor: Actor, shipmentId: string) {
   }
   const events = [...((s!.events as object[]) || []), { date: new Date().toISOString(), status: 'CANCELADO', description: s!.providerRef ? 'Etiqueta cancelada no provedor' : 'Envio cancelado', location: '' }];
   return prisma.shipment.update({ where: { id: s!.id }, data: { status: 'CANCELADO', events } });
+}
+
+/**
+ * Volumes/peso alterados num envio cuja etiqueta já foi comprada no provedor: a etiqueta comprada
+ * não muda. Melhor Envio com "Recomprar etiqueta ao alterar volumes" ligado → cancela e compra outra
+ * com os novos dados; nos demais casos, erro pedindo para cancelar e comprar novamente.
+ * Devolve null quando não há etiqueta real (o chamador só atualiza o envio).
+ */
+export async function changePurchasedVolumes(actor: Actor, s: Shipment, data: { volumes: number; weight?: number }) {
+  if (!s.providerRef) return null;
+  const weight = data.weight ? Number(data.weight) : s.weight;
+  if (data.volumes === s.volumes && weight === s.weight) return s;
+  const name = s.provider === 'CORREIOS' ? 'nos Correios' : 'no Melhor Envio';
+  if (s.status !== 'ETIQUETA_GERADA') fail(400, `Envio já ${s.status === 'PENDENTE' ? 'em compra' : 'postado'} — volumes não podem ser alterados`);
+  const acc = await getAccount(actor.companyId, s.provider);
+  if (!(acc?.provider === 'MELHOR_ENVIO' && acc.settings.rebuyOnVolumes)) {
+    fail(400, `A etiqueta deste envio já foi comprada ${name} com ${s.volumes} volume(s) de ${num(s.weight, 3)} kg. Para alterar volumes ou peso, cancele a etiqueta e compre novamente.`);
+  }
+  await meCancel(acc!, s.providerRef);
+  const events = [...((s.events as object[]) || []), { date: new Date().toISOString(), status: 'PENDENTE', description: `Etiqueta cancelada no Melhor Envio para recompra: ${s.volumes} → ${data.volumes} volume(s), ${num(s.weight, 3)} → ${num(weight, 3)} kg`, location: '' }];
+  await prisma.shipment.update({ where: { id: s.id }, data: { volumes: data.volumes, weight, providerRef: null, trackingCode: null, labelUrl: null, status: 'PENDENTE', events } });
+  return buyShipmentLabel(actor, s.id);
 }
 
 const TRACK_FLOW = [

@@ -73,14 +73,17 @@ function ConfigDialog({ p, onClose, onSaved }: { p: any; onClose: () => void; on
   const [env, setEnv] = useState<string>(acc?.environment || 'SANDBOX');
   const [values, setValues] = useState<Record<string, any>>(() => Object.fromEntries(p.fields.filter((f: any) => !f.secret).map((f: any) => [f.key, acc?.settings?.[f.key] ?? ''])));
   const [busy, setBusy] = useState(false);
-  const save = async () => {
+  // Provedor com OAuth (a API devolve oauthReady sempre que existe `oauth`); API_KEY + OAuth = colar o token OU conectar
+  const hasOauth = p.auth === 'OAUTH' || (p.oauthReady !== undefined && p.oauthReady !== null);
+  const both = hasOauth && p.auth !== 'OAUTH';
+  const save = async (test = p.auth !== 'OAUTH') => {
     setBusy(true);
     try {
-      const r: any = await api(`/api/integration-accounts/${p.key.toLowerCase()}`, { method: 'PUT', json: { environment: env, values, test: p.auth !== 'OAUTH' } });
+      const r: any = await api(`/api/integration-accounts/${p.key.toLowerCase()}`, { method: 'PUT', json: { environment: env, values, test } });
       if (r.ok === false) toast.error(`Credenciais salvas, mas o teste falhou: ${r.error}`);
-      else toast.success(p.auth === 'OAUTH' ? 'Configuração salva' : `Conectado${r.test?.accountName ? `: ${r.test.accountName}` : ''}`);
+      else toast.success(!test ? 'Configuração salva' : `Conectado${r.test?.accountName ? `: ${r.test.accountName}` : ''}`);
       onSaved();
-      if (r.ok !== false && p.auth !== 'OAUTH') onClose();
+      if (r.ok !== false && test) onClose();
     } catch (e) { toast.error((e as Error).message); }
     setBusy(false);
   };
@@ -100,8 +103,8 @@ function ConfigDialog({ p, onClose, onSaved }: { p: any; onClose: () => void; on
       footer={<>
         {acc?.status && acc.status !== 'DESCONECTADO' && <Button variant="ghost" disabled={busy} onClick={() => action('disconnect')}>Desconectar</Button>}
         {acc?.hasToken || acc?.status === 'CONECTADO' ? <Button variant="outline" disabled={busy} onClick={() => action('test')}>Testar conexão</Button> : null}
-        {p.auth === 'OAUTH' && <Button variant="outline" disabled={busy} onClick={async () => { await save(); window.location.href = `/api/integration-accounts/${p.key.toLowerCase()}/connect`; }}><Link2 className="mr-1 h-4 w-4" />{acc?.hasToken ? 'Reconectar' : `Conectar com ${p.name}`}</Button>}
-        <Button disabled={busy} onClick={save}>{busy ? 'Aguarde…' : p.auth === 'OAUTH' ? 'Salvar' : 'Salvar e testar'}</Button>
+        {hasOauth && <Button variant="outline" disabled={busy} onClick={async () => { await save(false); window.location.href = `/api/integration-accounts/${p.key.toLowerCase()}/connect`; }}><Link2 className="mr-1 h-4 w-4" />{acc?.hasToken ? 'Reconectar' : `Conectar com ${p.name}`}</Button>}
+        <Button disabled={busy} onClick={() => save()}>{busy ? 'Aguarde…' : p.auth === 'OAUTH' ? 'Salvar' : both ? 'Salvar token e testar' : 'Salvar e testar'}</Button>
       </>}>
       <div className="space-y-4">
         {p.sandbox && (
@@ -109,9 +112,12 @@ function ConfigDialog({ p, onClose, onSaved }: { p: any; onClose: () => void; on
             <Select value={env} onChange={(e) => setEnv(e.target.value)}><option value="SANDBOX">Testes (sandbox / homologação)</option><option value="PRODUCAO">Produção</option></Select>
           </Field>
         )}
-        {p.auth === 'OAUTH' && (
+        {hasOauth && (
           <div className="rounded-md border bg-muted/40 p-3 text-xs">
-            {p.oauthReady ? <>Clique em <b>Conectar com {p.name}</b>: você será levado à página de autorização e voltará conectado, como no Bling.</> : <><b>Aplicativo da plataforma não configurado.</b> O administrador do GestãoPro precisa cadastrar o app no portal de desenvolvedores do {p.name} e definir as variáveis de ambiente (veja o README). Também é possível informar um app próprio nos campos abaixo.</>}
+            {both ? (p.oauthReady
+              ? <>Duas formas de conectar: <b>cole o token de acesso</b> nos campos abaixo e clique em <b>Salvar token e testar</b>, <b>ou</b> clique em <b>Conectar com {p.name}</b> para autorizar pela página do {p.name} (sem copiar token).</>
+              : <>Cole o <b>token de acesso</b> nos campos abaixo e clique em <b>Salvar token e testar</b>. A conexão por autorização (<b>Conectar com {p.name}</b>) depende do aplicativo da plataforma, ainda não configurado pelo administrador (ou informe um app próprio nos campos).</>)
+            : p.oauthReady ? <>Clique em <b>Conectar com {p.name}</b>: você será levado à página de autorização e voltará conectado, como no Bling.</> : <><b>Aplicativo da plataforma não configurado.</b> O administrador do GestãoPro precisa cadastrar o app no portal de desenvolvedores do {p.name} e definir as variáveis de ambiente (veja o README). Também é possível informar um app próprio nos campos abaixo.</>}
             {p.redirectUri && <div className="mt-2 flex items-center gap-2">URL de retorno (redirect URI): <code className="rounded bg-background px-1">{p.redirectUri}</code><button onClick={() => copy(p.redirectUri)}><Copy className="h-3 w-3" /></button></div>}
           </div>
         )}
