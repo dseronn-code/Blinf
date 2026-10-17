@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateDemoCertificate, verifySignature } from '@/server/services/cert';
 import { isValidAccessKey } from '@/lib/br';
-import { mdfeKey, buildMdfeXml, buildMdfeEvent, detEncerramento, detCancelamentoMdfe, parseRetMdfe, parseRetEventoMdfe, mdfeQrUrl } from '@/server/services/mdfe';
+import { mdfeKey, mdfeDados, buildMdfeXml, buildMdfeEvent, detEncerramento, detCancelamentoMdfe, parseRetMdfe, parseRetEventoMdfe, mdfeQrUrl } from '@/server/services/mdfe';
 import { soapEnvelope } from '@/server/services/sefaz/soap';
 import { mdfeUrl } from '@/server/services/sefaz/urls';
 import { canonicalOf, NS } from '@/server/services/sefaz/xml';
@@ -56,5 +56,25 @@ describe('MDF-e modelo 58 (3.00)', () => {
     expect(parseRetEventoMdfe('<retEventoMDFe><infEvento><cStat>135</cStat><xMotivo>Evento registrado</xMotivo><nProt>9352</nProt></infEvento></retEventoMDFe>')).toMatchObject({ ok: true, nProt: '9352' });
     expect(mdfeUrl('MDFeRecepcaoSinc', 2)).toBe('https://mdfe-homologacao.svrs.rs.gov.br/ws/MDFeRecepcaoSinc/MDFeRecepcaoSinc.asmx');
     expect(soapEnvelope('MDFeRecepcaoSinc', 'H4sI', { ns: 'http://www.portalfiscal.inf.br/mdfe/wsdl/MDFeRecepcaoSinc', dataTag: 'mdfeDadosMsg' })).toContain('<mdfeDadosMsg xmlns="http://www.portalfiscal.inf.br/mdfe/wsdl/MDFeRecepcaoSinc">H4sI</mdfeDadosMsg>');
+  });
+
+  it('vários municípios de carregamento/descarregamento, rodado, carroceria, capacidade e reboques (item DADOS)', () => {
+    const NFE2 = '35261011444777000161550010000001241000000025';
+    const dados = { type: 'DADOS', description: '', at: '', extraLoads: [{ city: 'Campinas', code: '3509502' }], unloads: [{ city: 'Goiânia', code: '5208707', keys: [NFE1] }, { city: 'Anápolis', code: '5201108', keys: [NFE2] }], tpRod: '03', tpCar: '05', capKG: 30000, capM3: 90, trailers: [{ plate: 'XYZ9A87', tara: 7000, capKG: 25000, capM3: 80, tpCar: '05', uf: 'SP' }] };
+    const mm = { ...m, invoiceKeys: [NFE1, NFE2], events: [dados, { type: 'CRIACAO', description: 'x', at: '' }] };
+    const d = mdfeDados(mm);
+    expect(d.loads.map((l) => l.code)).toEqual(['3550308', '3509502']);
+    expect(d.unloads.map((u) => u.keys)).toEqual([[NFE1], [NFE2]]);
+    const key = mdfeKey(company, mm, new Date('2026-10-16T12:00:00Z'), '12345678');
+    const x = buildMdfeXml(mm, company, { tpAmb: 2, key, dhEmi: new Date() }).xml;
+    expect(x).toContain('<infMunCarrega><cMunCarrega>3550308</cMunCarrega><xMunCarrega>São Paulo</xMunCarrega></infMunCarrega><infMunCarrega><cMunCarrega>3509502</cMunCarrega><xMunCarrega>Campinas</xMunCarrega></infMunCarrega><infPercurso>');
+    expect(x).toContain('<tara>5000</tara><capKG>30000</capKG><capM3>90</capM3><condutor>');
+    expect(x).toContain('<tpRod>03</tpRod><tpCar>05</tpCar><UF>SP</UF></veicTracao><veicReboque><placa>XYZ9A87</placa><tara>7000</tara><capKG>25000</capKG><capM3>80</capM3><tpCar>05</tpCar><UF>SP</UF></veicReboque></rodo>');
+    expect(x).toContain(`<infDoc><infMunDescarga><cMunDescarga>5208707</cMunDescarga><xMunDescarga>Goiânia</xMunDescarga><infNFe><chNFe>${NFE1}</chNFe></infNFe></infMunDescarga><infMunDescarga><cMunDescarga>5201108</cMunDescarga><xMunDescarga>Anápolis</xMunDescarga><infNFe><chNFe>${NFE2}</chNFe></infNFe></infMunDescarga></infDoc>`);
+    expect(x).toContain('<qNFe>2</qNFe>');
+    // Sem item DADOS (manifestos antigos): um município, todas as NF-e, rodado 06 / carroceria 02
+    const old = mdfeDados({ ...m, invoiceKeys: [NFE1, NFE2], events: [] });
+    expect(old).toMatchObject({ tpRod: '06', tpCar: '02', trailers: [] });
+    expect(old.unloads).toEqual([{ city: 'Goiânia', code: '5208707', keys: [NFE1, NFE2] }]);
   });
 });

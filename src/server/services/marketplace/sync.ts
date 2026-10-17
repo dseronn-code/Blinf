@@ -12,6 +12,7 @@ import type { AccountCtx } from '@/server/integrations/types';
 import type { Actor } from '../sales';
 import { getAdapter, MARKETPLACE_PROVIDERS, type MkListing, type MkOrder } from './types';
 import { ingestOrder, channelLog, type IngestResult } from './ingest';
+import { nfeConsultaUrl } from './mappers';
 
 const DEFAULT_FEE: Record<string, number> = { MERCADO_LIVRE: 14, SHOPEE: 20 };
 
@@ -215,7 +216,8 @@ export async function pushListing(ch: SalesChannel, acc: AccountCtx, externalId:
 }
 
 // ---------------------------------------------------------------------------
-// NF-e para o canal (Mercado Livre exige o XML da nota no pacote)
+// NF-e para o canal: XML no pacote do Mercado Livre; número/série/chave nos demais
+// (Shopee add_invoice_data, metafields da Shopify, meta_data do WooCommerce, Nuvemshop)
 // ---------------------------------------------------------------------------
 export async function uploadOrderInvoice(companyId: string, orderId: string, invoiceId: string) {
   const order = await prisma.salesOrder.findFirst({ where: { id: orderId, companyId } });
@@ -223,14 +225,16 @@ export async function uploadOrderInvoice(companyId: string, orderId: string, inv
   const ch = await prisma.salesChannel.findUnique({ where: { id: order.channelId } });
   const adapter = ch ? getAdapter(ch.provider) : undefined;
   if (!ch || !adapter?.uploadInvoice || !isRealChannel(ch)) return null;
-  const inv = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+  const inv = await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { items: { select: { cfop: true }, take: 1 } } });
   const xml = inv?.procXml || inv?.xml;
-  if (!inv || inv.status !== 'AUTORIZADA' || !xml) return null;
+  if (!inv || inv.status !== 'AUTORIZADA' || !xml || !inv.accessKey) return null;
   const acc = await linkedAccount(ch);
   if (!acc) return null;
   const ref = ((order.shipTo || {}) as any).ref || {};
   try {
-    await adapter.uploadInvoice(acc, { externalId: order.externalId, packId: ref.packId || null }, xml);
+    await adapter.uploadInvoice(acc, { externalId: order.externalId, packId: ref.packId || null }, {
+      xml, number: inv.number, series: inv.series, accessKey: inv.accessKey, issueDate: inv.authorizedAt || inv.issueDate, total: inv.total, productsTotal: inv.productsTotal, cfop: inv.items[0]?.cfop || null, danfeUrl: nfeConsultaUrl(inv.accessKey),
+    });
     await channelLog(ch.id, 'PEDIDO', `NF-e nº ${inv.number} enviada ao ${ch.name} (pedido ${order.externalId})`, { orderId, invoiceId });
     return true;
   } catch (e) {

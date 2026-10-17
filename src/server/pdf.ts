@@ -8,6 +8,7 @@ import bwipjs from 'bwip-js/node';
 import type { Company, Invoice, InvoiceItem, FinancialEntry, BankAccount, Shipment, SalesOrder, Mdfe, Gnre } from '@prisma/client';
 import { formatAccessKey } from '@/lib/br';
 import { nfceQrCode, nfceUrlChave } from '@/server/services/sefaz/qrcode';
+import { mdfeDados, TP_ROD, TP_CAR } from '@/server/services/mdfe';
 import { fmtDoc, fmtCep, fmtDate, fmtDateTime, money, num } from '@/lib/utils';
 
 const WIN_ANSI_EXTRA = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
@@ -491,17 +492,28 @@ export async function damdfePdf(m: Mdfe, company: Company, invoices: { number: n
   box(c, M + 2 * q, y, q, 24, 'RNTRC', m.rntrc || '-', 8);
   box(c, M + 3 * q, y, q, 24, 'Condutor (CPF)', fmtDoc(m.driverCpf), 8);
   y -= 24;
-  box(c, M, y, W, 22, 'Nome do condutor', m.driverName, 8);
+  const d = mdfeDados(m);
+  box(c, M, y, W / 2, 22, 'Nome do condutor', m.driverName, 8);
+  box(c, M + W / 4 * 2, y, q, 22, 'Rodado / Carroceria', `${d.tpRod} ${TP_ROD[d.tpRod] || ''} / ${d.tpCar} ${TP_CAR[d.tpCar] || ''}`, 7);
+  box(c, M + 3 * q, y, q, 22, 'Capacidade', [d.capKG ? `${num(d.capKG, 0)} kg` : '', d.capM3 ? `${num(d.capM3, 0)} m³` : ''].filter(Boolean).join(' / ') || '-', 8);
   y -= 22;
-  box(c, M, y, W / 2, 22, 'Município de carregamento', `${m.loadCity} (${m.loadCityCode})`, 8);
-  box(c, M + W / 2, y, W / 2, 22, 'Município de descarregamento', `${m.unloadCity} (${m.unloadCityCode})`, 8);
+  for (const t of d.trailers) {
+    box(c, M, y, W, 18, 'Reboque', `Placa ${t.plate}  UF ${t.uf}  Tara ${t.tara} kg  Capacidade ${num(t.capKG, 0)} kg${t.capM3 ? ` / ${num(t.capM3, 0)} m³` : ''}  Carroceria ${t.tpCar} ${TP_CAR[t.tpCar] || ''}`, 7);
+    y -= 18;
+  }
+  box(c, M, y, W, 22, 'Município(s) de carregamento', d.loads.map((l) => `${l.city} (${l.code})`).join('; '), 8);
+  y -= 22;
+  box(c, M, y, W, 22, 'Município(s) de descarregamento', d.unloads.map((u) => `${u.city} (${u.code})`).join('; '), 8);
   y -= 30;
-  text(c, 'DOCUMENTOS VINCULADOS (NF-e)', M, y, 9, true); y -= 12;
-  for (const k of m.invoiceKeys) {
-    const inv = invoices.find((i) => i.accessKey === k);
-    text(c, `${formatAccessKey(k)}${inv ? `   NF-e ${inv.number}/${inv.series}  ${inv.customerName.slice(0, 30)}  ${money(inv.total)}` : ''}`, M, y, 7);
-    y -= 10;
-    if (y < 80) break;
+  text(c, 'DOCUMENTOS VINCULADOS (NF-e) POR MUNICÍPIO DE DESCARREGAMENTO', M, y, 9, true); y -= 12;
+  outer: for (const u of d.unloads) {
+    text(c, `${u.city} (${u.code}) - ${u.keys.length} NF-e`, M, y, 8, true); y -= 10;
+    for (const k of u.keys) {
+      const inv = invoices.find((i) => i.accessKey === k);
+      text(c, `${formatAccessKey(k)}${inv ? `   NF-e ${inv.number}/${inv.series}  ${inv.customerName.slice(0, 30)}  ${money(inv.total)}` : ''}`, M + 8, y, 7);
+      y -= 10;
+      if (y < 80) break outer;
+    }
   }
   y -= 8;
   text(c, 'Consulte a autenticidade em https://dfe-portal.svrs.rs.gov.br/MDFE/Consulta', M, Math.max(y, 50), 7);

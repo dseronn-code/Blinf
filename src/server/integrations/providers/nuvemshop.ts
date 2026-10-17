@@ -7,8 +7,8 @@ import { registerProvider } from '../registry';
 import { httpRequest, ensureOk, IntegrationError } from '../http';
 import { findAccountByExternalId, appUrl } from '../accounts';
 import type { AccountCtx } from '../types';
-import { registerAdapter, type MkListing, type MkOrder, type MkStatus, type MkAddress } from '@/server/services/marketplace/types';
-import { num, str, cep, doc, toUf, fullName, joinExternal, splitExternal, hmacMatches } from '@/server/services/marketplace/mappers';
+import { registerAdapter, type MkListing, type MkOrder, type MkStatus, type MkAddress, type MkDraft, type MkInvoice } from '@/server/services/marketplace/types';
+import { num, str, cep, doc, toUf, fullName, joinExternal, splitExternal, hmacMatches, money2, variationOptions } from '@/server/services/marketplace/mappers';
 import { ensureChannelForAccount, ingestForAccount, pollMarketplace } from '@/server/services/marketplace/sync';
 
 const P = 'NUVEMSHOP';
@@ -17,9 +17,15 @@ const clientId = (acc?: AccountCtx | null) => (acc?.settings.clientId as string)
 const clientSecret = (acc?: AccountCtx | null) => acc?.secrets.clientSecret || process.env.NUVEMSHOP_CLIENT_SECRET || '';
 const userAgent = () => `GestaoPro ERP (${process.env.NUVEMSHOP_CONTACT_EMAIL || 'suporte@gestaopro.com.br'})`;
 
-async function ns<T = any>(acc: AccountCtx, path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown; allow404?: boolean } = {}) {
+async function ns<T = any>(acc: AccountCtx, path: string, init: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; body?: unknown; allow404?: boolean } = {}) {
   const res = await httpRequest<T>({ provider: P, companyId: acc.companyId, url: `${API}/${acc.externalAccountId}${path}`, method: init.method, body: init.body, headers: { Authentication: `bearer ${acc.secrets.accessToken}`, 'User-Agent': userAgent() } });
   if (init.allow404 && res.status === 404) return null;
+  if (!res.ok && res.status === 422 && res.data && typeof res.data === 'object') {
+    // Validação: { "campo": ["mensagem"] } ou { code, message, description }
+    const d = res.data as any;
+    const msg = d.description || Object.entries(d).filter(([k]) => !['code', 'message'].includes(k)).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`).join(' | ');
+    if (msg) throw new IntegrationError(`Nuvemshop: ${msg}`, res.status, d);
+  }
   return ensureOk(res, 'Nuvemshop').data;
 }
 
@@ -99,7 +105,64 @@ async function pushListing(acc: AccountCtx, externalId: string, data: { stock?: 
   if (Object.keys(body).length) await ns(acc, `/products/${productId}/variants/${variantId}`, { method: 'PUT', body });
 }
 
-registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing });
+// ---------------------------------------------------------------------------
+// Criação e edição de produtos
+// ---------------------------------------------------------------------------
+export function buildNuvemshopProduct(d: MkDraft) {
+  const opts = variationOptions(d.variations).slice(0, 3);
+  const dims = { weight: (Math.round(d.weight * 1000) / 1000).toFixed(3), width: d.width.toFixed(2), height: d.height.toFixed(2), depth: d.length.toFixed(2) };
+  const variants = d.variations.length
+    ? d.variations.map((v) => ({ price: money2(v.price).toFixed(2), stock: Math.max(0, Math.floor(v.quantity)), sku: v.sku, ...(v.gtin ? { barcode: v.gtin } : {}), ...dims, values: opts.map((o) => ({ pt: v.attributes[o.name] || '-' })) }))
+    : [{ price: money2(d.price).toFixed(2), stock: Math.max(0, Math.floor(d.quantity)), sku: d.sku, ...(d.gtin ? { barcode: d.gtin } : {}), ...dims }];
+  return {
+    name: { pt: d.title },
+    description: { pt: d.description },
+    ...(d.brand ? { brand: d.brand } : {}),
+    published: true,
+    ...(opts.length ? { attributes: opts.map((o) => ({ pt: o.name })) } : {}),
+    variants,
+    images: d.images.filter((u) => /^https?:/.test(u)).map((src, i) => ({ src, position: i + 1 })),
+  };
+}
+
+async function createListing(acc: AccountCtx, d: MkDraft): Promise<MkListing[]> {
+  const p = await ns(acc, '/products', { method: 'POST', body: buildNuvemshopProduct(d) });
+  return (p?.variants || []).map((v: any) => {
+    const values = (v.values || []).map(pt).filter(Boolean).join(' ');
+    const stock = v.stock == null ? 0 : num(v.stock);
+    return { externalId: joinExternal(p.id, v.id), sku: str(v.sku), title: `${pt(p.name)}${values ? ` - ${values}` : ''}`, price: num(v.price), stock, status: stock > 0 ? 'ATIVO' : 'SEM_ESTOQUE', permalink: str(p.canonical_url), listingType: 'Loja' };
+  });
+}
+
+async function editListing(acc: AccountCtx, externalId: string, data: { active?: boolean; title?: string }) {
+  const [productId] = splitExternal(externalId);
+  const body: Record<string, unknown> = {};
+  if (data.active != null) body.published = data.active;
+  if (data.title) body.name = { pt: data.title };
+  if (Object.keys(body).length) await ns(acc, `/products/${productId}`, { method: 'PUT', body });
+}
+
+// ---------------------------------------------------------------------------
+// NF-e: chave e número em metafields do pedido + observação interna (owner_note)
+// ---------------------------------------------------------------------------
+export function nuvemshopInvoiceMetafields(orderId: string, inv: MkInvoice) {
+  const base = { namespace: 'nfe', owner_resource: 'Order', owner_id: Number(orderId) };
+  return [
+    { ...base, key: 'chave', value: inv.accessKey, description: 'Chave de acesso da NF-e' },
+    { ...base, key: 'numero', value: String(inv.number), description: 'Número da NF-e' },
+    { ...base, key: 'serie', value: String(inv.series), description: 'Série da NF-e' },
+  ];
+}
+
+async function uploadInvoice(acc: AccountCtx, ref: { externalId: string }, inv: MkInvoice) {
+  // Conferir na documentação: Metafields API (owner_resource "Order"); a Nuvemshop não tem endpoint fiscal no fulfillment
+  for (const m of nuvemshopInvoiceMetafields(ref.externalId, inv)) await ns(acc, '/metafields', { method: 'POST', body: m });
+  const o = await ns(acc, `/orders/${ref.externalId}`, { allow404: true });
+  const note = `NF-e nº ${inv.number} série ${inv.series} — chave ${inv.accessKey}`;
+  if (o && !String(o.owner_note || '').includes(inv.accessKey)) await ns(acc, `/orders/${ref.externalId}`, { method: 'PUT', body: { owner_note: [str(o.owner_note), note].filter(Boolean).join('\n') } });
+}
+
+registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing, createListing, editListing, uploadInvoice });
 
 // ---------------------------------------------------------------------------
 // Provedor
@@ -127,7 +190,7 @@ registerProvider({
     { key: 'clientId', label: 'ID do app próprio (opcional)', help: 'Deixe em branco para usar o aplicativo da plataforma' },
     { key: 'clientSecret', label: 'Client Secret do app próprio (opcional)', secret: true },
   ],
-  capabilities: ['Importação de pedidos pagos (webhooks order/paid + verificação a cada 10 min)', 'Cancelamentos refletidos no pedido', 'Vínculo de variantes por SKU', 'Estoque e preço em tempo real'],
+  capabilities: ['Importação de pedidos pagos (webhooks order/paid + verificação a cada 10 min)', 'Cancelamentos refletidos no pedido', 'Criação de produtos com variantes e imagens', 'Chave/número da NF-e registrados no pedido', 'Vínculo de variantes por SKU', 'Estoque e preço em tempo real'],
   oauth: {
     appConfigured: () => !!(process.env.NUVEMSHOP_CLIENT_ID && process.env.NUVEMSHOP_CLIENT_SECRET),
     // A URL de retorno é a cadastrada no app (Portal de Parceiros); o state volta na query

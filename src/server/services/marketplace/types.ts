@@ -59,6 +59,39 @@ export type MkListing = {
   listingType?: string | null;
 };
 
+/** Variação do anúncio a criar (produto filho VARIACAO do ERP) */
+export type MkDraftVariation = { sku: string; gtin?: string | null; price: number; quantity: number; attributes: Record<string, string>; images?: string[] };
+
+/** Anúncio a criar a partir do produto do ERP */
+export type MkDraft = {
+  orgId: string;
+  title: string;
+  description: string;
+  sku: string;
+  gtin?: string | null;
+  brand?: string | null;
+  price: number;
+  quantity: number;
+  /** URLs absolutas das imagens (ou data: URI) */
+  images: string[];
+  /** kg / cm */
+  weight: number;
+  width: number;
+  height: number;
+  length: number;
+  /** ML: gold_special (Clássico) | gold_pro (Premium) */
+  listingType?: string | null;
+  categoryId?: string | null;
+  /** Atributos do produto simples (ex.: {"Cor":"Azul"}) */
+  attributes?: Record<string, string>;
+  variations: MkDraftVariation[];
+};
+
+/** Dados da NF-e autorizada enviados ao canal */
+export type MkInvoice = { xml: string; number: number; series: number; accessKey: string; issueDate: Date; total: number; productsTotal: number; cfop?: string | null; danfeUrl?: string | null };
+
+export type MkCategory = { id: string; name: string; path?: string | null };
+
 export type MarketplaceAdapter = {
   provider: string;
   /** Pedidos criados ou alterados desde a data */
@@ -67,8 +100,14 @@ export type MarketplaceAdapter = {
   fetchListings: (acc: AccountCtx) => Promise<MkListing[]>;
   /** Envia estoque e/ou preço de um anúncio */
   pushListing: (acc: AccountCtx, externalId: string, data: { stock?: number; price?: number }) => Promise<void>;
-  /** Envia o XML da NF-e autorizada ao canal (ex.: Mercado Livre) */
-  uploadInvoice?: (acc: AccountCtx, ref: { externalId: string; packId?: string | null }, xml: string) => Promise<void>;
+  /** Envia a NF-e autorizada ao canal (XML no ML; dados fiscais nos demais) */
+  uploadInvoice?: (acc: AccountCtx, ref: { externalId: string; packId?: string | null }, inv: MkInvoice) => Promise<void>;
+  /** Cria o anúncio no canal; devolve um MkListing por variação (com o SKU do ERP) */
+  createListing?: (acc: AccountCtx, draft: MkDraft) => Promise<MkListing[]>;
+  /** Pausa/ativa e/ou altera o título do anúncio */
+  editListing?: (acc: AccountCtx, externalId: string, data: { active?: boolean; title?: string }) => Promise<void>;
+  /** Sugestão de categoria pelo título */
+  suggestCategories?: (acc: AccountCtx, title: string) => Promise<MkCategory[]>;
 };
 
 const adapters = new Map<string, MarketplaceAdapter>();

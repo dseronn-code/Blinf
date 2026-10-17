@@ -6,8 +6,8 @@
 import { registerProvider } from '../registry';
 import { httpRequest, ensureOk, IntegrationError } from '../http';
 import type { AccountCtx } from '../types';
-import { registerAdapter, type MkListing, type MkOrder, type MkStatus, type MkAddress } from '@/server/services/marketplace/types';
-import { num, str, cep, doc, toUf, fullName, splitStreet, joinExternal, splitExternal, hmacMatches } from '@/server/services/marketplace/mappers';
+import { registerAdapter, type MkListing, type MkOrder, type MkStatus, type MkAddress, type MkDraft, type MkInvoice } from '@/server/services/marketplace/types';
+import { num, str, cep, doc, toUf, fullName, splitStreet, joinExternal, splitExternal, hmacMatches, money2, variationOptions } from '@/server/services/marketplace/mappers';
 import { ensureChannelForAccount, ingestForAccount, pollMarketplace } from '@/server/services/marketplace/sync';
 
 const P = 'WOOCOMMERCE';
@@ -21,6 +21,7 @@ async function wc<T = any>(acc: AccountCtx, path: string, init: { method?: 'GET'
   if (!/^https:\/\//i.test(b)) throw new IntegrationError('WooCommerce: informe a URL da loja com HTTPS (a autenticação por chave exige HTTPS)');
   const auth = Buffer.from(`${acc.secrets.consumerKey || ''}:${acc.secrets.consumerSecret || ''}`).toString('base64');
   const res = await httpRequest<T>({ provider: P, companyId: acc.companyId, url: `${b}/wp-json/wc/v3${path}`, method: init.method, body: init.body, headers: { Authorization: `Basic ${auth}` } });
+  // Erros: { code, message, data: { status, params? } } — message já é legível
   ensureOk(res, 'WooCommerce');
   return res;
 }
@@ -122,7 +123,73 @@ async function pushListing(acc: AccountCtx, externalId: string, data: { stock?: 
   await wc(acc, variationId ? `/products/${productId}/variations/${variationId}` : `/products/${productId}`, { method: 'PUT', body });
 }
 
-registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing });
+// ---------------------------------------------------------------------------
+// Criação e edição de produtos
+// ---------------------------------------------------------------------------
+export function buildWooProduct(d: MkDraft) {
+  const opts = variationOptions(d.variations);
+  const common = { name: d.title, description: d.description, status: 'publish', weight: String(Math.round(d.weight * 1000) / 1000), dimensions: { length: String(d.length), width: String(d.width), height: String(d.height) }, images: d.images.filter((u) => /^https?:/.test(u)).map((src) => ({ src })) };
+  if (!d.variations.length) return { ...common, type: 'simple', sku: d.sku, regular_price: money2(d.price).toFixed(2), manage_stock: true, stock_quantity: Math.max(0, Math.floor(d.quantity)), ...(d.gtin ? { meta_data: [{ key: '_gtin', value: d.gtin }] } : {}) };
+  return { ...common, type: 'variable', sku: d.sku, attributes: opts.map((o, i) => ({ name: o.name, position: i, visible: true, variation: true, options: o.values })) };
+}
+
+export function buildWooVariations(d: MkDraft) {
+  return {
+    create: d.variations.map((v) => ({
+      sku: v.sku, regular_price: money2(v.price).toFixed(2), manage_stock: true, stock_quantity: Math.max(0, Math.floor(v.quantity)),
+      attributes: Object.entries(v.attributes).map(([name, option]) => ({ name, option })),
+      ...(v.gtin ? { meta_data: [{ key: '_gtin', value: v.gtin }] } : {}),
+    })),
+  };
+}
+
+async function createListing(acc: AccountCtx, d: MkDraft): Promise<MkListing[]> {
+  const p = (await wc(acc, '/products', { method: 'POST', body: buildWooProduct(d) })).data as any;
+  if (!p?.id) throw new IntegrationError('WooCommerce: produto não criado');
+  if (!d.variations.length) {
+    const stock = num(p.stock_quantity);
+    return [{ externalId: String(p.id), sku: str(p.sku) || d.sku, title: p.name, price: num(p.regular_price || p.price), stock, status: stock > 0 ? 'ATIVO' : 'SEM_ESTOQUE', permalink: str(p.permalink), listingType: 'Loja' }];
+  }
+  const batch = (await wc(acc, `/products/${p.id}/variations/batch`, { method: 'POST', body: buildWooVariations(d) })).data as any;
+  const out: MkListing[] = [];
+  for (const v of batch?.create || []) {
+    // Itens recusados no lote voltam com { error: { message } }
+    if (v.error || !v.id) throw new IntegrationError(`WooCommerce: variação recusada — ${v.error?.message || 'erro desconhecido'}`);
+    const stock = num(v.stock_quantity);
+    const values = (v.attributes || []).map((a: any) => a.option).join(' ');
+    out.push({ externalId: joinExternal(p.id, v.id), sku: str(v.sku), title: `${p.name}${values ? ` - ${values}` : ''}`, price: num(v.regular_price || v.price), stock, status: stock > 0 ? 'ATIVO' : 'SEM_ESTOQUE', permalink: str(v.permalink) || str(p.permalink), listingType: 'Loja' });
+  }
+  return out;
+}
+
+async function editListing(acc: AccountCtx, externalId: string, data: { active?: boolean; title?: string }) {
+  const [productId] = splitExternal(externalId);
+  const body: Record<string, unknown> = {};
+  if (data.active != null) body.status = data.active ? 'publish' : 'draft';
+  if (data.title) body.name = data.title;
+  if (Object.keys(body).length) await wc(acc, `/products/${productId}`, { method: 'PUT', body });
+}
+
+// ---------------------------------------------------------------------------
+// NF-e: meta_data do pedido + nota interna
+// ---------------------------------------------------------------------------
+export function wooInvoiceMeta(inv: MkInvoice) {
+  return {
+    meta_data: [
+      { key: '_nfe_chave', value: inv.accessKey },
+      { key: '_nfe_numero', value: String(inv.number) },
+      { key: '_nfe_serie', value: String(inv.series) },
+      ...(inv.danfeUrl ? [{ key: '_nfe_url', value: inv.danfeUrl }] : []),
+    ],
+  };
+}
+
+async function uploadInvoice(acc: AccountCtx, ref: { externalId: string }, inv: MkInvoice) {
+  await wc(acc, `/orders/${ref.externalId}`, { method: 'PUT', body: wooInvoiceMeta(inv) });
+  await wc(acc, `/orders/${ref.externalId}/notes`, { method: 'POST', body: { note: `NF-e nº ${inv.number} série ${inv.series} emitida. Chave de acesso: ${inv.accessKey}`, customer_note: false } });
+}
+
+registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing, createListing, editListing, uploadInvoice });
 
 // ---------------------------------------------------------------------------
 // Provedor
@@ -144,7 +211,7 @@ registerProvider({
     { key: 'consumerSecret', label: 'Consumer secret', secret: true, required: true },
     { key: 'webhookSecret', label: 'Segredo do webhook', secret: true, help: 'Cadastre em WooCommerce → Avançado → Webhooks os tópicos "Pedido criado" e "Pedido atualizado" com a URL abaixo e este segredo' },
   ],
-  capabilities: ['Importação de pedidos pagos (webhooks + verificação a cada 10 min)', 'Cancelamentos e conclusões refletidos no pedido', 'Vínculo de produtos e variações por SKU', 'Estoque e preço em tempo real'],
+  capabilities: ['Importação de pedidos pagos (webhooks + verificação a cada 10 min)', 'Cancelamentos e conclusões refletidos no pedido', 'Criação de produtos simples e variáveis', 'NF-e no pedido (meta_data _nfe_chave/_nfe_numero + nota)', 'Vínculo de produtos e variações por SKU', 'Estoque e preço em tempo real'],
   test: async (acc) => {
     await wc(acc, '/products?per_page=1');
     const accountName = (() => {

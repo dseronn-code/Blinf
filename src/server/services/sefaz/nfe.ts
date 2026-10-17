@@ -179,19 +179,41 @@ export async function autorizar(ctx: SefazCtx, model: 55 | 65, nfeXml: string, o
   return r;
 }
 
-export async function consultarProtocolo(ctx: SefazCtx, model: 55 | 65, chNFe: string) {
-  const body = await call(ctx, sefazUrl(ctx.uf, model, 'NFeConsultaProtocolo4', ctx.tpAmb), 'NFeConsultaProtocolo4', buildConsSitNFe(ctx.tpAmb, chNFe));
+/** Autorizador em que a NF-e foi emitida, pela chave: tpEmis 6 = SVC-AN, 7 = SVC-RS; demais = SEFAZ da UF (undefined) */
+export function authorizerOfKey(chNFe: string | null | undefined): Authorizer | undefined {
+  const tpEmis = chNFe?.length === 44 ? chNFe[34] : '';
+  return tpEmis === '6' ? 'SVC-AN' : tpEmis === '7' ? 'SVC-RS' : undefined;
+}
+
+/** 114 = SVC desabilitada pela SEFAZ de origem (contingência encerrada) */
+export const SVC_DISABLED = '114';
+
+export async function consultarProtocolo(ctx: SefazCtx, model: 55 | 65, chNFe: string, authorizer?: Authorizer) {
+  const body = await call(ctx, sefazUrl(ctx.uf, model, 'NFeConsultaProtocolo4', ctx.tpAmb, authorizer), 'NFeConsultaProtocolo4', buildConsSitNFe(ctx.tpAmb, chNFe));
   const ret = block(body, 'retConsSitNFe') || body;
   const prot = block(ret, 'protNFe');
   return { cStat: tag(ret.replace(prot || '', ''), 'cStat') || '', xMotivo: tag(ret.replace(prot || '', ''), 'xMotivo') || '', protXml: prot, prot: prot ? parseAutorizacao(`<retConsReciNFe>${prot}</retConsReciNFe>`) : null };
 }
 
-/** Registra um evento. `nacional` envia ao Ambiente Nacional (manifestação do destinatário, cOrgao 91). */
-export async function enviarEvento(ctx: SefazCtx, model: 55 | 65, e: EventInput & { nacional?: boolean }) {
-  const ev = buildEvento(ctx, { ...e, cOrgao: e.nacional ? '91' : e.cOrgao });
-  const url = e.nacional ? anUrl('NFeRecepcaoEvento4', ctx.tpAmb) : sefazUrl(ctx.uf, model, 'NFeRecepcaoEvento4', ctx.tpAmb);
-  const r = parseEvento(await call(ctx, url, 'NFeRecepcaoEvento4', ev.xml));
-  return { ...r, procXml: r.ok && r.retEvento ? buildProcEvento(ev.evento, r.retEvento) : null };
+/**
+ * Registra um evento. `nacional` envia ao Ambiente Nacional (manifestação do destinatário, cOrgao 91).
+ * NF-e autorizada pela SVC (tpEmis 6/7 na chave): o evento (cancelamento, CC-e) vai para a mesma SVC
+ * enquanto a contingência estiver ativa; se a SVC responder 114 (desabilitada pela SEFAZ de origem,
+ * contingência encerrada), reenvia à SEFAZ da UF, que já recebeu a nota sincronizada.
+ */
+export async function enviarEvento(ctx: SefazCtx, model: 55 | 65, e: EventInput & { nacional?: boolean; authorizer?: Authorizer | null }) {
+  const send = async (authorizer?: Authorizer) => {
+    // Conferir na documentação: cOrgao dos eventos enviados à SVC (usa-se o cUF do emitente)
+    const ev = buildEvento(ctx, { ...e, cOrgao: e.nacional ? '91' : e.cOrgao });
+    const url = e.nacional ? anUrl('NFeRecepcaoEvento4', ctx.tpAmb) : sefazUrl(ctx.uf, model, 'NFeRecepcaoEvento4', ctx.tpAmb, authorizer);
+    const r = parseEvento(await call(ctx, url, 'NFeRecepcaoEvento4', ev.xml));
+    return { ...r, authorizer: authorizer || null, procXml: r.ok && r.retEvento ? buildProcEvento(ev.evento, r.retEvento) : null };
+  };
+  const svc = e.nacional || e.authorizer === null ? undefined : e.authorizer || (model === 55 ? authorizerOfKey(e.chNFe) : undefined);
+  if (!svc) return send();
+  const r = await send(svc);
+  if (r.cStat === SVC_DISABLED || r.loteStat === SVC_DISABLED) return send();
+  return r;
 }
 
 export async function inutilizar(ctx: SefazCtx, model: 55 | 65, p: { serie: number; nIni: number; nFin: number; xJust: string }) {

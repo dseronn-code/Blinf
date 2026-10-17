@@ -8,8 +8,8 @@ import { registerProvider } from '../registry';
 import { httpRequest, ensureOk, IntegrationError } from '../http';
 import { findAccountByExternalId } from '../accounts';
 import type { AccountCtx, TokenResult } from '../types';
-import { registerAdapter, type MkListing, type MkOrder, type MkAddress, type MkStatus } from '@/server/services/marketplace/types';
-import { num, str, cep, doc, toUf, fullName, joinExternal, splitExternal, chunk } from '@/server/services/marketplace/mappers';
+import { registerAdapter, type MkListing, type MkOrder, type MkAddress, type MkStatus, type MkDraft, type MkInvoice, type MkCategory } from '@/server/services/marketplace/types';
+import { num, str, cep, doc, toUf, fullName, joinExternal, splitExternal, chunk, stripHtml, money2 } from '@/server/services/marketplace/mappers';
 import { ensureChannelForAccount, ingestForAccount, pollMarketplace, linkListings, actorFor } from '@/server/services/marketplace/sync';
 
 const P = 'MERCADO_LIVRE';
@@ -33,6 +33,12 @@ function tokenResult(d: any): TokenResult {
 async function ml<T = any>(acc: AccountCtx, path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown; headers?: Record<string, string>; allow404?: boolean } = {}) {
   const res = await httpRequest<T>({ provider: P, companyId: acc.companyId, url: path.startsWith('http') ? path : `${ML_API}${path}`, method: init.method, body: init.body, headers: { Authorization: `Bearer ${acc.secrets.accessToken}`, ...(init.headers || {}) } });
   if (init.allow404 && res.status === 404) return null;
+  if (!res.ok) {
+    // Erros de validação: { message: "Validation error", cause: [{ type: "error", code, message }] } → mensagens do ML
+    const d = res.data as any;
+    const causes = (Array.isArray(d?.cause) ? d.cause : []).filter((c: any) => c?.type !== 'warning' && c?.message).map((c: any) => c.message);
+    if (causes.length) throw new IntegrationError(`Mercado Livre: ${causes.join(' | ')}`, res.status, d);
+  }
   return ensureOk(res, 'Mercado Livre').data;
 }
 
@@ -187,7 +193,7 @@ async function pushListing(acc: AccountCtx, externalId: string, data: { stock?: 
 }
 
 /** XML da NF-e no pacote (sem pacote, o ID do pedido faz as vezes do pack_id) */
-async function uploadInvoice(acc: AccountCtx, ref: { externalId: string; packId?: string | null }, xml: string) {
+async function uploadInvoice(acc: AccountCtx, ref: { externalId: string; packId?: string | null }, { xml }: MkInvoice) {
   const boundary = `----GestaoPro${crypto.randomBytes(8).toString('hex')}`;
   const body = Buffer.concat([
     Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="fiscal_document"; filename="nfe-${ref.externalId}.xml"\r\nContent-Type: text/xml\r\n\r\n`),
@@ -197,7 +203,110 @@ async function uploadInvoice(acc: AccountCtx, ref: { externalId: string; packId?
   await ml(acc, `/packs/${ref.packId || ref.externalId}/fiscal_documents`, { method: 'POST', body, headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` } });
 }
 
-registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing, uploadInvoice });
+// ---------------------------------------------------------------------------
+// Criação e edição de anúncios
+// ---------------------------------------------------------------------------
+/** Predição de categoria pelo título */
+async function suggestCategories(acc: AccountCtx, title: string): Promise<MkCategory[]> {
+  const r = await ml<any[]>(acc, `/sites/MLB/domain_discovery/search?limit=5&q=${encodeURIComponent(title)}`);
+  const seen = new Set<string>();
+  return (r || []).filter((d: any) => d?.category_id && !seen.has(d.category_id) && seen.add(d.category_id)).map((d: any) => ({ id: String(d.category_id), name: d.category_name || d.category_id, path: d.domain_name || null }));
+}
+
+const fold = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+/** Nomes usuais no ERP → IDs de atributo do ML */
+const ATTR_ALIAS: Record<string, string> = { cor: 'COLOR', color: 'COLOR', tamanho: 'SIZE', size: 'SIZE', voltagem: 'VOLTAGE', modelo: 'MODEL', material: 'MATERIAL', sabor: 'FLAVOR', genero: 'GENDER' };
+
+function findAttr(catAttrs: any[], name: string) {
+  const n = fold(name);
+  return catAttrs.find((a) => a.id === ATTR_ALIAS[n]) || catAttrs.find((a) => fold(String(a.name || '')) === n) || null;
+}
+
+/** Valor do atributo: usa value_id quando o nome bate com um valor da lista do ML */
+function attrValue(def: any, id: string, value: string) {
+  const v = (def?.values || []).find((x: any) => fold(String(x.name)) === fold(value));
+  return v ? { id, value_id: String(v.id) } : { id, value_name: value };
+}
+
+/** Monta o corpo do POST /items: atributos obrigatórios preenchidos com o que houver no produto */
+export function buildMlItem(d: MkDraft, categoryId: string, catAttrs: any[]) {
+  const attributes: any[] = [];
+  const has = (id: string) => attributes.some((a) => a.id === id);
+  const required = (a: any) => a?.tags?.required || a?.tags?.catalog_required;
+  if (d.brand) attributes.push({ id: 'BRAND', value_name: d.brand });
+  const modelDef = catAttrs.find((a) => a.id === 'MODEL');
+  if (modelDef && required(modelDef)) attributes.push({ id: 'MODEL', value_name: d.attributes?.Modelo || d.sku });
+  attributes.push({ id: 'ITEM_CONDITION', value_id: '2230284' }); // Novo
+  for (const [k, v] of Object.entries(d.attributes || {})) {
+    const def = findAttr(catAttrs, k);
+    if (def && !has(def.id)) attributes.push(attrValue(def, def.id, v));
+  }
+  const pictures = d.images.map((source) => ({ source }));
+  const body: Record<string, any> = {
+    title: d.title.slice(0, 60),
+    category_id: categoryId,
+    price: money2(d.price),
+    currency_id: 'BRL',
+    buying_mode: 'buy_it_now',
+    listing_type_id: d.listingType || 'gold_special',
+    condition: 'new',
+    pictures,
+    attributes,
+  };
+  if (!d.variations.length) {
+    body.available_quantity = Math.max(0, Math.floor(d.quantity));
+    attributes.push({ id: 'SELLER_SKU', value_name: d.sku });
+    if (d.gtin) attributes.push({ id: 'GTIN', value_name: d.gtin });
+    else if (catAttrs.some((a) => a.id === 'GTIN' && required(a))) attributes.push({ id: 'EMPTY_GTIN_REASON', value_id: '17055160' }); // "O produto não tem código cadastrado"
+    return body;
+  }
+  // Variações: atributos que variam (attribute_combinations) + SKU/GTIN de cada uma.
+  // Conferir na documentação: o ML exige o mesmo preço em todas as variações.
+  body.variations = d.variations.map((v) => {
+    const vAttrs: any[] = [{ id: 'SELLER_SKU', value_name: v.sku }];
+    if (v.gtin) vAttrs.push({ id: 'GTIN', value_name: v.gtin });
+    const pics = (v.images || []).filter(Boolean);
+    for (const p of pics) if (!pictures.some((x) => x.source === p)) pictures.push({ source: p });
+    return {
+      price: money2(d.price),
+      available_quantity: Math.max(0, Math.floor(v.quantity)),
+      attribute_combinations: Object.entries(v.attributes).map(([k, val]) => {
+        const def = findAttr(catAttrs, k);
+        return def ? { ...attrValue(def, def.id, val), name: def.name } : { name: k, value_name: val };
+      }),
+      attributes: vAttrs,
+      ...(pics.length ? { picture_ids: pics } : {}),
+    };
+  });
+  if (!d.variations.some((v) => v.gtin) && catAttrs.some((a) => a.id === 'GTIN' && required(a))) attributes.push({ id: 'EMPTY_GTIN_REASON', value_id: '17055160' });
+  return body;
+}
+
+async function createListing(acc: AccountCtx, d: MkDraft): Promise<MkListing[]> {
+  if (!d.images.length) throw new IntegrationError('Mercado Livre: o anúncio precisa de ao menos uma imagem — cadastre imagens no produto');
+  const categoryId = d.categoryId || (await suggestCategories(acc, d.title))[0]?.id;
+  if (!categoryId) throw new IntegrationError('Mercado Livre: não foi possível sugerir a categoria — informe a categoria (ex.: MLB1234)');
+  const catAttrs = (await ml<any[]>(acc, `/categories/${categoryId}/attributes`)) || [];
+  const item = await ml(acc, '/items', { method: 'POST', body: buildMlItem(d, categoryId, catAttrs) });
+  // A descrição vai em chamada separada; falha aqui não desfaz o anúncio
+  const description = stripHtml(d.description);
+  if (description) await ml(acc, `/items/${item.id}/description`, { method: 'POST', body: { plain_text: description } }).catch(() => null);
+  // O ML devolve as variações na ordem enviada; o SKU pode não vir na resposta
+  const listings = mapMlItem(item);
+  if (item.variations?.length) listings.forEach((l, i) => (l.sku = l.sku || d.variations[i]?.sku || null));
+  else listings[0].sku = listings[0].sku || d.sku;
+  return listings;
+}
+
+async function editListing(acc: AccountCtx, externalId: string, data: { active?: boolean; title?: string }) {
+  const [itemId] = splitExternal(externalId);
+  const body: Record<string, unknown> = {};
+  if (data.active != null) body.status = data.active ? 'active' : 'paused';
+  if (data.title) body.title = data.title.slice(0, 60);
+  if (Object.keys(body).length) await ml(acc, `/items/${itemId}`, { method: 'PUT', body });
+}
+
+registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing, uploadInvoice, createListing, editListing, suggestCategories });
 
 // ---------------------------------------------------------------------------
 // OAuth
@@ -224,7 +333,7 @@ registerProvider({
     { key: 'clientId', label: 'Client ID do app próprio (opcional)', help: 'Deixe em branco para usar o aplicativo da plataforma' },
     { key: 'clientSecret', label: 'Client Secret do app próprio (opcional)', secret: true },
   ],
-  capabilities: ['Importação de pedidos pagos (notificações orders_v2 + verificação a cada 10 min)', 'Cancelamentos e envios refletidos no pedido', 'Vínculo de anúncios e variações por SKU', 'Estoque e preço em tempo real', 'Envio do XML da NF-e ao pacote'],
+  capabilities: ['Importação de pedidos pagos (notificações orders_v2 + verificação a cada 10 min)', 'Cancelamentos e envios refletidos no pedido', 'Criação de anúncios Clássico/Premium com variações a partir do produto', 'Pausar/ativar e editar preço/título', 'Vínculo de anúncios e variações por SKU', 'Estoque e preço em tempo real', 'Envio do XML da NF-e ao pacote'],
   oauth: {
     appConfigured: () => !!(process.env.ML_CLIENT_ID && process.env.ML_CLIENT_SECRET),
     authorizeUrl: (acc, state, redirectUri) => {

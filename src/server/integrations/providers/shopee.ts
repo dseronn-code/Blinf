@@ -8,8 +8,9 @@ import { registerProvider } from '../registry';
 import { httpRequest, ensureOk, IntegrationError } from '../http';
 import { findAccountByExternalId, appUrl } from '../accounts';
 import type { AccountCtx, TokenResult } from '../types';
-import { registerAdapter, type MkListing, type MkOrder, type MkStatus } from '@/server/services/marketplace/types';
-import { num, str, cep, doc, toUf, splitStreet, joinExternal, splitExternal, chunk } from '@/server/services/marketplace/mappers';
+import { registerAdapter, type MkListing, type MkOrder, type MkStatus, type MkDraft, type MkInvoice, type MkCategory } from '@/server/services/marketplace/types';
+import { loadImage } from '@/server/services/marketplace/images';
+import { num, str, cep, doc, toUf, splitStreet, joinExternal, splitExternal, chunk, stripHtml, money2, variationOptions, multipart } from '@/server/services/marketplace/mappers';
 import { ensureChannelForAccount, ingestForAccount, pollMarketplace } from '@/server/services/marketplace/sync';
 
 const P = 'SHOPEE';
@@ -34,8 +35,8 @@ export function shopeeUrl(acc: AccountCtx | null, path: string, query: Record<st
   return `${host(acc)}${path}?${q}`;
 }
 
-async function sp<T = any>(acc: AccountCtx, path: string, opts: { query?: Record<string, string | number>; body?: unknown } = {}) {
-  const res = await httpRequest<T>({ provider: P, companyId: acc.companyId, url: shopeeUrl(acc, path, opts.query), method: opts.body ? 'POST' : 'GET', body: opts.body });
+async function sp<T = any>(acc: AccountCtx, path: string, opts: { query?: Record<string, string | number>; body?: unknown; headers?: Record<string, string>; shop?: boolean } = {}) {
+  const res = await httpRequest<T>({ provider: P, companyId: acc.companyId, url: shopeeUrl(acc, path, opts.query, opts.shop ?? true), method: opts.body ? 'POST' : 'GET', body: opts.body, headers: opts.headers });
   const d = ensureOk(res, 'Shopee').data as any;
   if (d?.error) throw new IntegrationError(`Shopee: ${d.message || d.error}`, res.status, d);
   return d as T;
@@ -153,7 +154,124 @@ async function pushListing(acc: AccountCtx, externalId: string, data: { stock?: 
   if (data.price != null) await sp(acc, '/api/v2/product/update_price', { body: { item_id: Number(itemId), price_list: [{ model_id, original_price: Math.round(data.price * 100) / 100 }] } });
 }
 
-registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing });
+// ---------------------------------------------------------------------------
+// Criação e edição de anúncios
+// ---------------------------------------------------------------------------
+/** Sugestão de categoria pelo nome do item */
+async function suggestCategories(acc: AccountCtx, title: string): Promise<MkCategory[]> {
+  const d = await sp(acc, '/api/v2/product/category_recommend', { query: { item_name: title.slice(0, 120) } });
+  return ((d?.response?.category_id || []) as number[]).map((id) => ({ id: String(id), name: `Categoria ${id}` }));
+}
+
+/** Imagem → image_id (v2.media_space.upload_image, multipart campo "image") */
+async function uploadImage(acc: AccountCtx, orgId: string, url: string) {
+  const img = await loadImage(orgId, url);
+  if (!img) throw new IntegrationError(`Shopee: não foi possível ler a imagem ${url.slice(0, 80)}`);
+  const mp = multipart({ field: 'image', filename: img.filename, mime: img.mime, data: img.data });
+  // Conferir na documentação: upload_image é chamada pública (assinada sem access_token/shop_id)
+  const d = await sp(acc, '/api/v2/media_space/upload_image', { body: mp.body, headers: { 'Content-Type': mp.contentType }, shop: false });
+  const id = d?.response?.image_info?.image_id;
+  if (!id) throw new IntegrationError('Shopee: upload da imagem sem image_id');
+  return String(id);
+}
+
+/** Canais logísticos habilitados na loja (logistic_info é obrigatório no add_item) */
+async function logistics(acc: AccountCtx) {
+  const d = await sp(acc, '/api/v2/logistics/get_channel_list');
+  const list = (d?.response?.logistics_channel_list || []).filter((c: any) => c.enabled && !c.mask_channel_id);
+  if (!list.length) throw new IntegrationError('Shopee: nenhum canal de envio habilitado na loja — ative ao menos um em Configurações de Envio no Seller Center');
+  return list.map((c: any) => ({ logistic_id: c.logistics_channel_id, enabled: true }));
+}
+
+/** Corpo do v2.product.add_item */
+export function buildShopeeItem(d: MkDraft, imageIds: string[], logisticInfo: { logistic_id: number; enabled: boolean }[]) {
+  const desc = stripHtml(d.description);
+  return {
+    item_name: d.title.slice(0, 120),
+    description: desc.length >= 20 ? desc.slice(0, 3000) : `${d.title}. ${desc}`.padEnd(20, '.'),
+    original_price: money2(d.price),
+    seller_stock: [{ stock: d.variations.length ? 0 : Math.max(0, Math.floor(d.quantity)) }],
+    category_id: Number(d.categoryId),
+    image: { image_id_list: imageIds.slice(0, 9) },
+    item_sku: d.sku,
+    weight: Math.max(0.01, Math.round(d.weight * 1000) / 1000),
+    dimension: { package_length: Math.max(1, Math.round(d.length)), package_width: Math.max(1, Math.round(d.width)), package_height: Math.max(1, Math.round(d.height)) },
+    logistic_info: logisticInfo,
+    condition: 'NEW',
+    item_status: 'NORMAL',
+    // Conferir na documentação: categorias com marca obrigatória exigem brand_id da lista get_brand_list (0 = "NoBrand")
+    brand: { brand_id: 0, original_brand_name: d.brand || 'NoBrand' },
+    ...(d.gtin && !d.variations.length ? { gtin_code: d.gtin } : {}),
+  };
+}
+
+/** Corpo do v2.product.init_tier_variation (até 2 níveis de variação) */
+export function buildShopeeTiers(itemId: number, d: MkDraft) {
+  const opts = variationOptions(d.variations).slice(0, 2);
+  return {
+    item_id: itemId,
+    tier_variation: opts.map((o) => ({ name: o.name.slice(0, 14), option_list: o.values.map((option) => ({ option: option.slice(0, 20) })) })),
+    model: d.variations.map((v) => ({
+      tier_index: opts.map((o) => Math.max(0, o.values.indexOf(v.attributes[o.name]))),
+      original_price: money2(v.price),
+      model_sku: v.sku,
+      seller_stock: [{ stock: Math.max(0, Math.floor(v.quantity)) }],
+      ...(v.gtin ? { gtin_code: v.gtin } : {}),
+    })),
+  };
+}
+
+async function createListing(acc: AccountCtx, d: MkDraft): Promise<MkListing[]> {
+  if (!d.categoryId || !/^\d+$/.test(String(d.categoryId))) throw new IntegrationError('Shopee: informe a categoria do anúncio (ID numérico da categoria Shopee — use "Sugerir categoria")');
+  if (!d.images.length) throw new IntegrationError('Shopee: o anúncio precisa de ao menos uma imagem — cadastre imagens no produto');
+  const imageIds: string[] = [];
+  for (const url of d.images.slice(0, 9)) imageIds.push(await uploadImage(acc, d.orgId, url));
+  const add = await sp(acc, '/api/v2/product/add_item', { body: buildShopeeItem(d, imageIds, await logistics(acc)) });
+  const itemId = Number(add?.response?.item_id);
+  if (!itemId) throw new IntegrationError('Shopee: add_item não devolveu o item_id');
+  const permalink = `https://shopee.com.br/product/${acc.externalAccountId}/${itemId}`;
+  if (!d.variations.length) return [{ externalId: String(itemId), sku: d.sku, title: d.title, price: money2(d.price), stock: d.quantity, status: d.quantity > 0 ? 'ATIVO' : 'SEM_ESTOQUE', permalink }];
+  const tiers = await sp(acc, '/api/v2/product/init_tier_variation', { body: buildShopeeTiers(itemId, d) });
+  let models: any[] = tiers?.response?.model || [];
+  if (!models.some((m) => m.model_id)) models = (await sp(acc, '/api/v2/product/get_model_list', { query: { item_id: itemId } }))?.response?.model || [];
+  return d.variations.map((v) => {
+    const m = models.find((x) => str(x.model_sku) === v.sku);
+    return { externalId: joinExternal(itemId, m?.model_id), sku: v.sku, title: `${d.title} - ${Object.values(v.attributes).join(' ')}`.trim(), price: money2(v.price), stock: v.quantity, status: v.quantity > 0 ? 'ATIVO' : 'SEM_ESTOQUE', permalink };
+  });
+}
+
+async function editListing(acc: AccountCtx, externalId: string, data: { active?: boolean; title?: string }) {
+  const [itemId] = splitExternal(externalId);
+  if (data.active != null) await sp(acc, '/api/v2/product/unlist_item', { body: { item_list: [{ item_id: Number(itemId), unlist: !data.active }] } });
+  if (data.title) await sp(acc, '/api/v2/product/update_item', { body: { item_id: Number(itemId), item_name: data.title.slice(0, 120) } });
+}
+
+// ---------------------------------------------------------------------------
+// NF-e (Brasil): v2.order.add_invoice_data — pedidos em INVOICE_PENDING aguardam estes dados
+// ---------------------------------------------------------------------------
+export function buildShopeeInvoice(orderSn: string, inv: MkInvoice) {
+  return {
+    order_sn: orderSn,
+    invoice_data: {
+      number: String(inv.number),
+      series_number: String(inv.series),
+      access_key: inv.accessKey,
+      issue_date: Math.floor(new Date(inv.issueDate).getTime() / 1000),
+      total_value: money2(inv.total),
+      products_total_value: money2(inv.productsTotal),
+      tax_code: (inv.cfop || '').replace(/\D/g, '') || '5102',
+    },
+  };
+}
+
+async function uploadInvoice(acc: AccountCtx, ref: { externalId: string }, inv: MkInvoice) {
+  await sp(acc, '/api/v2/order/add_invoice_data', { body: buildShopeeInvoice(ref.externalId, inv) });
+  // Conferir na documentação: o XML pode ser exigido via v2.order.upload_invoice_doc (file_type 1 = XML) em alguns modelos logísticos
+  const mp = multipart({ field: 'file', filename: `nfe-${inv.accessKey}.xml`, mime: 'text/xml', data: Buffer.from(inv.xml, 'utf8') }, { order_sn: ref.externalId, file_type: '1' });
+  await sp(acc, '/api/v2/order/upload_invoice_doc', { body: mp.body, headers: { 'Content-Type': mp.contentType } }).catch(() => null);
+}
+
+registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing, createListing, editListing, suggestCategories, uploadInvoice });
 
 // ---------------------------------------------------------------------------
 // Provedor
@@ -184,7 +302,7 @@ registerProvider({
     { key: 'partnerId', label: 'Partner ID do app próprio (opcional)', help: 'Deixe em branco para usar o aplicativo da plataforma' },
     { key: 'partnerKey', label: 'Partner Key do app próprio (opcional)', secret: true },
   ],
-  capabilities: ['Importação de pedidos pagos (push + verificação a cada 10 min)', 'Cancelamentos e envios refletidos no pedido', 'Vínculo de itens e modelos por SKU', 'Estoque e preço em tempo real'],
+  capabilities: ['Importação de pedidos pagos (push + verificação a cada 10 min)', 'Cancelamentos e envios refletidos no pedido', 'Criação de anúncios com variações, imagens e logística', 'Dados da NF-e enviados ao pedido (add_invoice_data)', 'Vínculo de itens e modelos por SKU', 'Estoque e preço em tempo real'],
   oauth: {
     appConfigured: () => !!(process.env.SHOPEE_PARTNER_ID && process.env.SHOPEE_PARTNER_KEY),
     authorizeUrl: (acc, state, redirectUri) => {

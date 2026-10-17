@@ -16,5 +16,8 @@ export const POST = route('fiscal', 'edit', async ({ ctx, body }) =>
     driverName: body?.driverName || '', driverCpf: body?.driverCpf || '', route: Array.isArray(body?.route) ? body.route : [],
     ufStart: body?.ufStart || undefined, ufEnd: body?.ufEnd || undefined, loadCity: body?.loadCity || undefined, loadCityCode: body?.loadCityCode || undefined,
     unloadCity: body?.unloadCity || undefined, unloadCityCode: body?.unloadCityCode || undefined,
+    loads: Array.isArray(body?.loads) ? body.loads : undefined, unloads: Array.isArray(body?.unloads) ? body.unloads : undefined,
+    tpRod: body?.tpRod || undefined, tpCar: body?.tpCar || undefined, capKG: Number(body?.capKG) || null, capM3: Number(body?.capM3) || null,
+    trailers: Array.isArray(body?.trailers) ? body.trailers : [],
   }),
 );

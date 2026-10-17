@@ -7,8 +7,8 @@ import { registerProvider } from '../registry';
 import { httpRequest, ensureOk, IntegrationError } from '../http';
 import { updateAccount } from '../accounts';
 import type { AccountCtx } from '../types';
-import { registerAdapter, type MkListing, type MkOrder, type MkStatus, type MkAddress } from '@/server/services/marketplace/types';
-import { num, str, cep, doc, toUf, fullName, splitStreet, joinExternal, splitExternal, hmacMatches } from '@/server/services/marketplace/mappers';
+import { registerAdapter, type MkListing, type MkOrder, type MkStatus, type MkAddress, type MkDraft, type MkInvoice } from '@/server/services/marketplace/types';
+import { num, str, cep, doc, toUf, fullName, splitStreet, joinExternal, splitExternal, hmacMatches, money2, variationOptions } from '@/server/services/marketplace/mappers';
 import { ensureChannelForAccount, ingestForAccount, pollMarketplace } from '@/server/services/marketplace/sync';
 
 const P = 'SHOPIFY';
@@ -24,6 +24,9 @@ const base = (acc: AccountCtx) => `https://${shopDomain(acc.settings.shopDomain)
 async function sh<T = any>(acc: AccountCtx, path: string, init: { method?: 'GET' | 'POST' | 'PUT'; body?: unknown } = {}) {
   if (!shopDomain(acc.settings.shopDomain)) throw new IntegrationError('Shopify: informe o domínio da loja (minhaloja.myshopify.com)');
   const res = await httpRequest<T>({ provider: P, companyId: acc.companyId, url: path.startsWith('https://') ? path : `${base(acc)}${path}`, method: init.method, body: init.body, headers: { 'X-Shopify-Access-Token': acc.secrets.accessToken || '' } });
+  const e = (res.data as any)?.errors;
+  // Validação (422): { errors: { title: ["can't be blank"] } } ou { errors: "mensagem" }
+  if (!res.ok && e) throw new IntegrationError(`Shopify: ${typeof e === 'string' ? e : Object.entries(e).map(([k, v]) => `${k} ${Array.isArray(v) ? v.join(', ') : String(v)}`).join(' | ')}`, res.status, res.data);
   ensureOk(res, 'Shopify');
   return res;
 }
@@ -121,7 +124,69 @@ async function pushListing(acc: AccountCtx, externalId: string, data: { stock?: 
   if (data.price != null) await sh(acc, `/variants/${variantId}.json`, { method: 'PUT', body: { variant: { id: Number(variantId), price: (Math.round(data.price * 100) / 100).toFixed(2) } } });
 }
 
-registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing });
+// ---------------------------------------------------------------------------
+// Criação e edição de produtos
+// ---------------------------------------------------------------------------
+export function buildShopifyProduct(d: MkDraft) {
+  const opts = variationOptions(d.variations).slice(0, 3);
+  const common = { inventory_management: 'shopify', weight: Math.round(d.weight * 1000) / 1000, weight_unit: 'kg', requires_shipping: true };
+  const variants = d.variations.length
+    ? d.variations.map((v) => ({ ...common, sku: v.sku, price: money2(v.price).toFixed(2), ...(v.gtin ? { barcode: v.gtin } : {}), ...Object.fromEntries(opts.map((o, i) => [`option${i + 1}`, v.attributes[o.name] || '-'])) }))
+    : [{ ...common, sku: d.sku, price: money2(d.price).toFixed(2), ...(d.gtin ? { barcode: d.gtin } : {}) }];
+  return {
+    product: {
+      title: d.title,
+      body_html: d.description,
+      ...(d.brand ? { vendor: d.brand } : {}),
+      status: 'active',
+      ...(opts.length ? { options: opts.map((o) => ({ name: o.name })) } : {}),
+      variants,
+      images: d.images.filter((u) => /^https?:/.test(u)).map((src) => ({ src })),
+    },
+  };
+}
+
+async function createListing(acc: AccountCtx, d: MkDraft): Promise<MkListing[]> {
+  const res = await sh(acc, '/products.json', { method: 'POST', body: buildShopifyProduct(d) });
+  const p = res.data?.product;
+  if (!p?.id) throw new IntegrationError('Shopify: produto não criado');
+  const domain = shopDomain(acc.settings.publicDomain || acc.settings.shopDomain);
+  const loc = Number(await locationId(acc));
+  const out: MkListing[] = [];
+  for (const v of p.variants || []) {
+    const qty = Math.max(0, Math.floor(d.variations.length ? d.variations.find((x) => x.sku === v.sku)?.quantity ?? 0 : d.quantity));
+    // O estoque inicial vai por inventory_levels/set (inventory_quantity no POST é ignorado)
+    if (v.inventory_item_id) await sh(acc, '/inventory_levels/set.json', { method: 'POST', body: { location_id: loc, inventory_item_id: Number(v.inventory_item_id), available: qty } });
+    out.push({ externalId: joinExternal(p.id, v.id, v.inventory_item_id), sku: str(v.sku), title: `${p.title}${v.title && v.title !== 'Default Title' ? ` - ${v.title}` : ''}`, price: num(v.price), stock: qty, status: qty > 0 ? 'ATIVO' : 'SEM_ESTOQUE', permalink: `https://${domain}/products/${p.handle}`, listingType: 'Loja' });
+  }
+  return out;
+}
+
+async function editListing(acc: AccountCtx, externalId: string, data: { active?: boolean; title?: string }) {
+  const [productId] = splitExternal(externalId);
+  const product: Record<string, unknown> = { id: Number(productId) };
+  if (data.active != null) product.status = data.active ? 'active' : 'draft';
+  if (data.title) product.title = data.title;
+  if (Object.keys(product).length > 1) await sh(acc, `/products/${productId}.json`, { method: 'PUT', body: { product } });
+}
+
+// ---------------------------------------------------------------------------
+// NF-e: metafields do pedido (namespace "nfe")
+// ---------------------------------------------------------------------------
+export function shopifyInvoiceMetafields(inv: MkInvoice) {
+  return [
+    { namespace: 'nfe', key: 'chave', type: 'single_line_text_field', value: inv.accessKey },
+    { namespace: 'nfe', key: 'numero', type: 'single_line_text_field', value: String(inv.number) },
+    { namespace: 'nfe', key: 'serie', type: 'single_line_text_field', value: String(inv.series) },
+    ...(inv.danfeUrl ? [{ namespace: 'nfe', key: 'url_danfe', type: 'url', value: inv.danfeUrl }] : []),
+  ];
+}
+
+async function uploadInvoice(acc: AccountCtx, ref: { externalId: string }, inv: MkInvoice) {
+  for (const metafield of shopifyInvoiceMetafields(inv)) await sh(acc, `/orders/${ref.externalId}/metafields.json`, { method: 'POST', body: { metafield } });
+}
+
+registerAdapter({ provider: P, fetchOrders, fetchListings, pushListing, createListing, editListing, uploadInvoice });
 
 // ---------------------------------------------------------------------------
 // Provedor
@@ -144,7 +209,7 @@ registerProvider({
     { key: 'locationId', label: 'ID da localização de estoque (opcional)', help: 'Em branco = primeira localização ativa' },
     { key: 'publicDomain', label: 'Domínio público da loja (opcional)', placeholder: 'www.minhaloja.com.br' },
   ],
-  capabilities: ['Importação de pedidos pagos (webhooks + verificação a cada 10 min)', 'Cancelamentos e envios refletidos no pedido', 'Vínculo de variantes por SKU', 'Estoque (inventory_levels) e preço em tempo real'],
+  capabilities: ['Importação de pedidos pagos (webhooks + verificação a cada 10 min)', 'Cancelamentos e envios refletidos no pedido', 'Criação de produtos com variantes e imagens', 'NF-e nos metafields do pedido (namespace nfe)', 'Vínculo de variantes por SKU', 'Estoque (inventory_levels) e preço em tempo real'],
   test: async (acc) => {
     const res = await sh(acc, '/shop.json');
     const shop = res.data?.shop || {};

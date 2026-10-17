@@ -13,6 +13,8 @@ import { money, num, fmtDateTime, fmtDoc } from '@/lib/utils';
 import { formatAccessKey } from '@/lib/br';
 
 const STATUS_LABEL: Record<string, [string, string]> = { RASCUNHO: ['Rascunho', 'gray'], AUTORIZADO: ['Autorizado', 'green'], REJEITADO: ['Rejeitado', 'red'], ENCERRADO: ['Encerrado', 'blue'], CANCELADO: ['Cancelado', 'gray'], PROCESSANDO: ['Processando', 'blue'] };
+const TP_ROD: Record<string, string> = { '01': 'Truck', '02': 'Toco', '03': 'Cavalo mecânico', '04': 'VAN', '05': 'Utilitário', '06': 'Outros' };
+const TP_CAR: Record<string, string> = { '00': 'Não aplicável', '01': 'Aberta', '02': 'Fechada/Baú', '03': 'Granelera', '04': 'Porta contêiner', '05': 'Sider' };
 const EVENT_TONE: Record<string, string> = { AUTORIZACAO: 'green', REJEICAO: 'red', CANCELAMENTO: 'gray', ENCERRAMENTO: 'blue' };
 
 export default function MdfeDetail() {
@@ -23,6 +25,8 @@ export default function MdfeDetail() {
   const [cancel, setCancel] = useState(false);
   if (!m) return null;
   const [label, tone] = STATUS_LABEL[m.status] || [m.status, 'gray'];
+  const d = m.dados || { loads: [], unloads: [], trailers: [] };
+  const lastUnload = d.unloads.at(-1)?.city || m.unloadCity;
   const events: { type: string; code?: string; protocol?: string; description: string; at: string }[] = Array.isArray(m.events) ? [...m.events].reverse() : [];
   return (
     <div>
@@ -32,7 +36,7 @@ export default function MdfeDetail() {
           {['RASCUNHO', 'REJEITADO', 'PROCESSANDO'].includes(m.status) && <Button onClick={() => act('POST', `/api/mdfe/${id}/transmit`, {}, 'Manifesto transmitido — veja o retorno')}><Send /> {m.status === 'PROCESSANDO' ? 'Consultar retorno' : 'Transmitir'}</Button>}
           <Button variant="outline" onClick={() => openFile(`/api/mdfe/${id}/damdfe`)}><FileText /> DAMDFE</Button>
           {m.hasXml && <Button variant="outline" onClick={() => openFile(`/api/mdfe/${id}/xml`)}><FileCode /> XML</Button>}
-          {m.status === 'AUTORIZADO' && <Button variant="outline" onClick={() => confirm(`Encerrar o MDF-e em ${m.unloadCity}/${m.ufEnd}? Faça isso ao concluir a viagem.`) && act('POST', `/api/mdfe/${id}/close`, {}, 'MDF-e encerrado')}><Flag /> Encerrar</Button>}
+          {m.status === 'AUTORIZADO' && <Button variant="outline" onClick={() => confirm(`Encerrar o MDF-e em ${lastUnload}/${m.ufEnd}? Faça isso ao concluir a viagem.`) && act('POST', `/api/mdfe/${id}/close`, {}, 'MDF-e encerrado')}><Flag /> Encerrar</Button>}
           {!['CANCELADO', 'ENCERRADO'].includes(m.status) && <Button variant="outline" onClick={() => setCancel(true)}><XCircle /> Cancelar</Button>}
         </>} />
       {m.rejection && m.status === 'REJEITADO' && <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{m.rejection}</div>}
@@ -45,14 +49,17 @@ export default function MdfeDetail() {
             <KV label="Emissão" value={fmtDateTime(m.issueDate)} />
             <KV label="Encerrado em" value={m.closedAt ? fmtDateTime(m.closedAt) : '—'} />
             <KV label="Percurso" value={[m.ufStart, ...m.route, m.ufEnd].filter((u: string, i: number, a: string[]) => a.indexOf(u) === i).join(' → ')} />
-            <KV label="Carregamento" value={`${m.loadCity} (${m.loadCityCode})`} />
-            <KV label="Descarregamento" value={`${m.unloadCity} (${m.unloadCityCode})`} />
+            <KV label="Carregamento" value={d.loads.map((l: any) => `${l.city} (${l.code})`).join('; ')} />
+            <KV label="Descarregamento" value={d.unloads.map((u: any) => `${u.city} (${u.code}) · ${u.keys.length} NF-e`).join('; ')} />
             <KV label="Peso bruto" value={`${num(m.totalWeight, 3)} kg`} />
             <KV label="Valor da carga" value={money(m.totalValue)} />
             <KV label="Veículo" value={<span className="font-mono">{m.vehiclePlate}</span>} />
             <KV label="UF / Tara" value={`${m.vehicleUf} / ${m.vehicleTara} kg`} />
             <KV label="RNTRC" value={m.rntrc || '—'} />
             <KV label="Condutor" value={`${m.driverName} (${fmtDoc(m.driverCpf)})`} />
+            <KV label="Rodado / Carroceria" value={`${TP_ROD[d.tpRod] || d.tpRod} / ${TP_CAR[d.tpCar] || d.tpCar}`} />
+            <KV label="Capacidade" value={[d.capKG ? `${num(d.capKG, 0)} kg` : '', d.capM3 ? `${num(d.capM3, 0)} m³` : ''].filter(Boolean).join(' / ') || '—'} />
+            {d.trailers.length > 0 && <div className="col-span-2"><KV label="Reboques" value={d.trailers.map((t: any) => `${t.plate} (${t.uf}, tara ${t.tara} kg, ${num(t.capKG, 0)} kg, ${TP_CAR[t.tpCar] || t.tpCar})`).join('; ')} /></div>}
           </CardContent>
         </Card>
         <Card>
@@ -67,6 +74,7 @@ export default function MdfeDetail() {
             { key: 'accessKey', header: 'Chave', cell: (r: any) => <span className="font-mono text-[11px]">{formatAccessKey(r.accessKey)}</span> },
             { key: 'customerName', header: 'Destinatário' },
             { key: 'customerUf', header: 'UF' },
+            { key: 'unloadCity', header: 'Descarregamento' },
             { key: 'total', header: 'Total', align: 'right', cell: (r: any) => money(r.total) },
             { key: 'status', header: 'Situação', cell: (r: any) => <StatusBadge status={r.status} /> },
           ]} />

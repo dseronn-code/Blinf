@@ -78,3 +78,26 @@ export function chunk<T>(arr: T[], size: number) {
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
 }
+
+/** Texto puro (descrição do ML não aceita HTML) */
+export const stripHtml = (s: unknown) => String(s ?? '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+
+export const money2 = (v: number) => Math.round(v * 100) / 100;
+
+/** Combinações de atributos das variações → opções ordenadas (ex.: Cor: [Azul, Preto]) */
+export function variationOptions(vars: { attributes: Record<string, string> }[]) {
+  const names = [...new Set(vars.flatMap((v) => Object.keys(v.attributes)))];
+  return names.map((name) => ({ name, values: [...new Set(vars.map((v) => v.attributes[name]).filter(Boolean))] }));
+}
+
+/** Multipart/form-data com um arquivo (+ campos) */
+export function multipart(file: { field: string; filename: string; mime: string; data: Buffer }, fields: Record<string, string> = {}) {
+  const boundary = `----GestaoPro${crypto.randomBytes(8).toString('hex')}`;
+  const parts: Buffer[] = [];
+  for (const [k, v] of Object.entries(fields)) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\nContent-Type: ${file.mime}\r\n\r\n`), file.data, Buffer.from(`\r\n--${boundary}--\r\n`));
+  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+/** Consulta pública da NF-e no Portal Nacional (o DANFE do ERP exige login) */
+export const nfeConsultaUrl = (key: string) => `https://www.nfe.fazenda.gov.br/portal/consultaRecaptcha.aspx?tipoConsulta=resumo&tipoConteudo=7PhJ+gAVw2g=&nfe=${key}`;

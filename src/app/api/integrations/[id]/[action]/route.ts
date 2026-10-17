@@ -1,6 +1,6 @@
 import { route } from '@/server/http';
 import { fail, HttpError } from '@/server/errors';
-import { importOrders, syncListings, publishListings, disconnectChannel, linkChannelListings } from '@/server/services/integrations';
+import { importOrders, syncListings, publishListings, disconnectChannel, linkChannelListings, createChannelListing, suggestCategories } from '@/server/services/integrations';
 
 export const POST = route('integracoes', 'edit', async ({ ctx, params, body }) => {
   const run = async <T>(fn: () => Promise<T>) => {
@@ -26,6 +26,12 @@ export const POST = route('integracoes', 'edit', async ({ ctx, params, body }) =
       return run(() => linkChannelListings(ctx, params.id));
     case 'publish':
       return run(async () => ({ published: await publishListings(ctx, params.id, body?.productIds) }));
+    // Cria o anúncio a partir do produto do ERP (canal real → API oficial)
+    case 'create-listing':
+      return run(() => createChannelListing(ctx, params.id, { productId: String(body?.productId || ''), listingType: body?.listingType || null, categoryId: body?.categoryId ? String(body.categoryId).trim() : null, price: body?.price != null && body.price !== '' ? Number(body.price) : null, quantity: body?.quantity != null && body.quantity !== '' ? Number(body.quantity) : null, title: body?.title || null }));
+    // Sugestão de categoria pelo título (Mercado Livre / Shopee)
+    case 'categories':
+      return run(async () => ({ rows: await suggestCategories(ctx, params.id, String(body?.title || '')) }));
     case 'disconnect':
       return disconnectChannel(ctx, params.id);
     default:

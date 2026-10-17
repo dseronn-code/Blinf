@@ -23,7 +23,7 @@ import { signElement } from './cert';
 import { IntegrationError } from '@/server/integrations/http';
 import { getAccount } from '@/server/integrations/accounts';
 import { focusEmit, focusGet, focusCancel, focusCce, focusInutilizar, focusDownload, focusNfePayload, focusNfsePayload, type FocusResult } from '@/server/integrations/providers/focusnfe';
-import { sefazCtx, autorizar, consultarRecibo, consultarProtocolo, enviarEvento, inutilizar, statusServico, buildNfeProc, detCancelamento, detCCe, type AuthResult } from './sefaz/nfe';
+import { sefazCtx, autorizar, consultarRecibo, consultarProtocolo, enviarEvento, authorizerOfKey, inutilizar, statusServico, buildNfeProc, detCancelamento, detCCe, type AuthResult } from './sefaz/nfe';
 import { svcFor, authorizerFor } from './sefaz/urls';
 import { nfceQrCode, nfceUrlChave } from './sefaz/qrcode';
 import { resolveCityCode, localCityCode } from './sefaz/ibge';
@@ -400,11 +400,11 @@ async function transmitSefaz(company: Company, invoice: FullInvoice, orgId: stri
   const model = invoice.model === 'NFCE' ? 65 : 55;
   const ctx = sefazCtx(company);
 
-  // Lote assíncrono pendente: consulta o recibo
-  if (invoice.status === 'PROCESSANDO' && invoice.receipt) {
+  // Lote pendente: consulta primeiro no mesmo autorizador do envio (SVC quando tpEmis 6/7) — recibo ou, sem recibo, protocolo pela chave
+  if (invoice.status === 'PROCESSANDO' && (invoice.receipt || invoice.accessKey)) {
     const nfe = block(invoice.xml, 'NFe') || '';
-    const r = await consultarRecibo(ctx, model, invoice.receipt, invoice.contingency && model === 55 ? svcFor(company.uf).authorizer : undefined);
-    return applySefazResult(company, invoice, r, nfe, { orgId, userName });
+    const r = await consultPending(ctx, model, invoice);
+    if (r) return applySefazResult(company, invoice, r, nfe, { orgId, userName });
   }
 
   const rejection = await sefazValidate(prisma, invoice, company);
@@ -462,6 +462,21 @@ async function transmitSefaz(company: Company, invoice: FullInvoice, orgId: stri
     if (q?.prot?.status === 'AUTORIZADA' && q.protXml && (!digest || q.protXml.includes(digest))) r = q.prot;
   }
   return applySefazResult(company, invoice, r, nfe, { orgId, userName, signed });
+}
+
+/** Consulta uma NF-e em processamento no autorizador em que foi enviada; null = não consta lá (pode reenviar) */
+async function consultPending(ctx: ReturnType<typeof sefazCtx>, model: 55 | 65, inv: { receipt: string | null; accessKey: string | null }): Promise<AuthResult | null> {
+  const authorizer = model === 55 ? authorizerOfKey(inv.accessKey) : undefined;
+  if (inv.receipt) {
+    const r = await consultarRecibo(ctx, model, inv.receipt, authorizer);
+    // 106 = lote não localizado (recibo expirado): segue para a consulta pela chave
+    if (r.status !== 'REJEITADA' || r.cStat !== '106' || !inv.accessKey) return r;
+  }
+  if (!inv.accessKey) return null;
+  const q = await consultarProtocolo(ctx, model, inv.accessKey, authorizer);
+  if (q.prot) return q.prot;
+  // 217 = NF-e não consta na base do autorizador
+  return q.cStat === '217' ? null : { status: 'PROCESSANDO', cStat: q.cStat, xMotivo: q.xMotivo };
 }
 
 /** Contingência SVC-AN/SVC-RS (tpEmis 6/7): nova chave, dhCont/xJust e envio ao servidor virtual */
@@ -633,9 +648,9 @@ export async function refreshPendingProvider(companyId: string) {
         const acc = await focusAccount(companyId);
         const r = await focusGet(acc, focusModel(inv, acc), inv.providerRef || inv.id);
         if (r.status !== 'PROCESSANDO') { await applyFocusResult(company, inv, r, { orgId: company.organizationId, async: true }); n++; }
-      } else if (fiscalProviderOf(company) === 'SEFAZ' && inv.receipt && inv.model !== 'NFSE') {
-        const r = await consultarRecibo(sefazCtx(company), inv.model === 'NFCE' ? 65 : 55, inv.receipt);
-        if (r.status !== 'PROCESSANDO') { await applySefazResult(company, inv, r, block(inv.xml, 'NFe') || '', { orgId: company.organizationId, async: true }); n++; }
+      } else if (fiscalProviderOf(company) === 'SEFAZ' && (inv.receipt || inv.accessKey) && inv.model !== 'NFSE') {
+        const r = await consultPending(sefazCtx(company), inv.model === 'NFCE' ? 65 : 55, inv);
+        if (r && r.status !== 'PROCESSANDO') { await applySefazResult(company, inv, r, block(inv.xml, 'NFe') || '', { orgId: company.organizationId, async: true }); n++; }
       }
     } catch {
       /* tenta na próxima rodada */
@@ -713,7 +728,7 @@ export async function cancelInvoice(companyId: string, orgId: string, invoiceId:
     }
     protocol = r.nProt || '';
     code = r.cStat;
-    detail = r.xMotivo;
+    detail = r.xMotivo + (r.authorizer ? ` (${r.authorizer})` : '');
     if (r.procXml) detail += ` — XML do evento: ${await storeXml(orgId, `${inv!.accessKey}-110111-procEventoNFe.xml`, r.procXml)}`;
   }
   await prisma.invoice.update({ where: { id: invoiceId }, data: { status: 'CANCELADA', cancelReason: reason, cancelProtocol: protocol, cancelledAt: new Date() } });
@@ -757,7 +772,7 @@ export async function correctionLetter(companyId: string, invoiceId: string, tex
       fail(400, `Rejeição ${r.cStat}: ${r.xMotivo}`);
     }
     const url = r.procXml ? await storeXml(company.organizationId, `${inv!.accessKey}-110110-${seq}-procEventoNFe.xml`, r.procXml) : null;
-    return prisma.invoiceEvent.create({ data: { invoiceId, type: 'CCE', code: r.cStat, protocol: r.nProt, description: `Carta de correção nº ${seq}: ${correction}${url ? ` — XML do evento: ${url}` : ''}` } });
+    return prisma.invoiceEvent.create({ data: { invoiceId, type: 'CCE', code: r.cStat, protocol: r.nProt, description: `Carta de correção nº ${seq}${r.authorizer ? ` (${r.authorizer})` : ''}: ${correction}${url ? ` — XML do evento: ${url}` : ''}` } });
   }
   return prisma.invoiceEvent.create({ data: { invoiceId, type: 'CCE', code: '135', protocol: `1${Date.now()}`, description: `Carta de correção: ${correction}` } });
 }

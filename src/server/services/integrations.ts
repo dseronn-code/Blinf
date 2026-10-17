@@ -11,7 +11,7 @@ import { generateCPF } from '@/lib/br';
 import { getAvailability } from './stock';
 import { resolvePrice, createOrder, type Actor } from './sales';
 import { getAccount } from '@/server/integrations/accounts';
-import { linkedAccount, ensureChannelForAccount, realImportOrders, realLinkListings, pushListing, isRealChannel, MARKETPLACE_PROVIDERS } from './marketplace';
+import { linkedAccount, ensureChannelForAccount, realImportOrders, realLinkListings, pushListing, isRealChannel, MARKETPLACE_PROVIDERS, createRealListing, editRealListing, suggestChannelCategories, getAdapter, type CreateListingInput } from './marketplace';
 
 export type ConnectorDef = { provider: string; name: string; category: string; color: string; feePercent: number; description: string; orderPrefix: string };
 
@@ -123,6 +123,56 @@ export async function publishListings(actor: Actor, channelId: string, productId
   }
   await log(channelId, 'ANUNCIO', `${count} anúncio(s) publicado(s)/atualizado(s)`);
   return count;
+}
+
+/**
+ * "Criar anúncio" a partir do produto do ERP: canal real → API oficial (anúncio com variações,
+ * imagens e categoria); canal simulado → publicação simulada do produto (e das variações).
+ */
+export async function createChannelListing(actor: Actor, channelId: string, input: CreateListingInput) {
+  const ch = await prisma.salesChannel.findFirst({ where: { id: channelId, companyId: actor.companyId } });
+  if (!ch) throw new Error('Canal não encontrado');
+  if (!input.productId) throw new Error('Escolha o produto');
+  const acc = await realAccountOf(ch);
+  if (acc) return createRealListing(actor, ch, acc, input);
+  const p = await prisma.product.findFirst({ where: { id: input.productId, organizationId: actor.orgId }, include: { variations: { where: { active: true }, select: { id: true } } } });
+  if (!p) throw new Error('Produto não encontrado');
+  const ids = p.kind === 'VARIACAO_PAI' ? p.variations.map((v) => v.id) : [p.id];
+  const count = await publishListings(actor, channelId, ids);
+  const patch: Record<string, unknown> = {};
+  if (input.price != null && Number(input.price) > 0) patch.price = Number(input.price);
+  if (input.title) patch.title = input.title;
+  if (ch.provider === 'MERCADO_LIVRE' && input.listingType) patch.listingType = input.listingType === 'gold_pro' ? 'Premium' : 'Clássico';
+  if (Object.keys(patch).length) await prisma.listing.updateMany({ where: { channelId, productId: { in: ids } }, data: patch });
+  return { created: count, listings: await prisma.listing.findMany({ where: { channelId, productId: { in: ids } } }), permalink: null };
+}
+
+/** Sugestão de categoria do canal (ML domain_discovery / Shopee category_recommend) */
+export async function suggestCategories(actor: Actor, channelId: string, title: string) {
+  const ch = await prisma.salesChannel.findFirst({ where: { id: channelId, companyId: actor.companyId } });
+  if (!ch) throw new Error('Canal não encontrado');
+  const acc = await realAccountOf(ch);
+  if (!acc) return [];
+  return suggestChannelCategories(ch, acc, title);
+}
+
+/** Pausar/ativar e alterar título/preço do anúncio (no canal real, via API, revertendo se falhar) */
+export async function updateListing(actor: Actor, listingId: string, body: { status?: string; title?: string; price?: number | string }) {
+  const l = await prisma.listing.findFirst({ where: { id: listingId, channel: { companyId: actor.companyId } }, include: { channel: true } });
+  if (!l) throw new Error('Anúncio não encontrado');
+  const ch = l.channel;
+  const simulated = !!l.permalink?.startsWith('https://simulado.');
+  const acc = simulated ? null : await realAccountOf(ch);
+  const price = body.price != null && body.price !== '' ? Number(body.price) : undefined;
+  if (price != null && !(price > 0)) throw new Error('Preço inválido');
+  if (acc && getAdapter(ch.provider)) return editRealListing(ch, acc, l.id, { status: body.status, title: body.title, price });
+  const data: Record<string, unknown> = { lastSyncAt: new Date() };
+  if (body.status) data.status = body.status;
+  if (body.title) data.title = body.title;
+  if (price != null) data.price = price;
+  const updated = await prisma.listing.update({ where: { id: l.id }, data });
+  await log(ch.id, 'ANUNCIO', `Anúncio ${l.externalId} atualizado: ${JSON.stringify(body)}`);
+  return updated;
 }
 
 /** Vincula os anúncios existentes no canal real aos produtos pelo SKU */
