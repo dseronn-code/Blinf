@@ -2,9 +2,7 @@
 
 Clone funcional, no estilo do Bling, de um sistema de gestão completo: cadastros, estoque, compras, vendas multicanal, PDV, notas fiscais (NF-e/NFC-e/NFS-e), financeiro com conta digital, produção, ordens de serviço, logística, integrações com marketplaces, loja virtual, relatórios, assistente de IA e automações. Tudo integrado: os dados fluem entre os módulos.
 
-> ⚠️ **Ambiente de demonstração.** As integrações externas (SEFAZ, prefeituras, bancos, Pix, adquirentes, Correios/Melhor Envio, marketplaces, WhatsApp) são **simuladas** de forma realista. Os algoritmos (chave de acesso NF-e com DV, XML 4.00 **assinado com certificado A1 real (XMLDSig)**, CNAB 400, linha digitável FEBRABAN, BR Code Pix com CRC16, rastreio UPU, TOTP) seguem os padrões reais, mas nenhum documento tem valor fiscal e nenhuma chamada é feita a serviços oficiais. As telas que simulam algo mostram um aviso 🧪.
->
-> **O que é real (funciona fora do demo):** e-mail via SMTP, assinatura digital do XML com o seu `.pfx`, arquivos CNAB/SPED/Sintegra/OFX, webhooks HTTP (com `WEBHOOKS_SIMULATE_ONLY=false`), API REST, 2FA, backups. **O que depende de credenciais/contratos externos:** autorização na SEFAZ/prefeituras, APIs bancárias e de adquirentes, marketplaces, Correios/Melhor Envio e WhatsApp Business.
+> ⚠️ **Integrações: reais quando conectadas, simuladas quando não.** Como no Bling, cada empresa conecta as próprias contas em **Integrações → Contas e credenciais** (e o certificado A1 em **Notas fiscais → Certificado**). Sem conta conectada, o módulo funciona em modo simulado (marcado com 🧪), ideal para demonstração. As integrações reais foram escritas conforme a documentação oficial de cada serviço e testadas com respostas simuladas; valide cada uma no ambiente de testes (sandbox/homologação) do provedor antes de usar em produção.
 
 ---
 
@@ -214,7 +212,23 @@ src/server/          contexto, http, eventos, PDF, planilhas, OpenAPI e serviço
 - Domínio próprio da loja: aponte o DNS (CNAME) para o servidor e informe o domínio no editor da loja; o `middleware` reconhece o host e abre a vitrine. O sitemap (`/sitemap.xml`) lista as lojas publicadas.
 - O limitador de requisições é em memória (por instância); com várias réplicas, troque por Redis mantendo a mesma função (`src/lib/rateLimit.ts`).
 
-### Limitações conhecidas (fora do alcance sem credenciais externas)
+## 🔗 Integrações reais (como no Bling)
 
-- Autorização real na SEFAZ/prefeituras (requer webservices estaduais/municipais, credenciamento e certificado ICP-Brasil): o XML é gerado e **assinado de verdade**, mas a autorização é simulada.
-- APIs de bancos (boleto registrado, Pix dinâmico, extrato automático), adquirentes, marketplaces, Correios/Melhor Envio e WhatsApp Business exigem contratos e chaves; os conectores simulam o comportamento e os pontos de integração estão isolados em `src/server/services`.
+| Área | Provedores | Como a empresa conecta |
+|---|---|---|
+| **Notas fiscais** | SEFAZ direta (NF-e/NFC-e 4.00 com certificado A1, eventos, inutilização, DF-e, contingência SVC), NFS-e Padrão Nacional, MDF-e, GNRE; ou **Focus NFe** (API fiscal) | Notas fiscais → Certificado: instalar o `.pfx`, escolher *SEFAZ direta* ou *Focus NFe*, homologação/produção, CSC da NFC-e, IE de substituto por UF |
+| **Cobrança** | **Asaas** e **Mercado Pago** (boleto, Pix, cartão via checkout, baixa automática por webhook) | Chave/token da conta + URL de webhook exibida na tela |
+| **Marketplaces e lojas** | **Mercado Livre**, **Shopee**, **Nuvemshop** (botão *Conectar*, OAuth), **Shopify**, **WooCommerce** (chave da loja) | Pedidos importados sem duplicar, estoque e preço por SKU, notificações em tempo real |
+| **Frete** | **Melhor Envio** (cotação, etiqueta, rastreio) e **Correios** (contrato: preço/prazo, pré-postagem, rastreio) | Token do Melhor Envio / credenciais do Meu Correios |
+| **Mensagens** | **SMTP** da empresa e **WhatsApp Cloud API** (modelos aprovados, status de entrega); modelos de e-mail editáveis | Configurações → Modelos de e-mail |
+
+Aplicativos da plataforma (como o Bling, um app por marketplace, configurado uma vez pelo administrador do servidor): `ML_CLIENT_ID`/`ML_CLIENT_SECRET`, `SHOPEE_PARTNER_ID`/`SHOPEE_PARTNER_KEY`, `NUVEMSHOP_CLIENT_ID`/`NUVEMSHOP_CLIENT_SECRET` e, opcionalmente, `MELHORENVIO_CLIENT_ID`/`MELHORENVIO_CLIENT_SECRET`. A URL de retorno a cadastrar no portal de cada um é mostrada na tela de contas (`/api/oauth/<provedor>/callback`). Para webhooks e callbacks funcionarem, `NEXTAUTH_URL` precisa ser o endereço público em HTTPS. Os segredos ficam criptografados no banco com `ENCRYPTION_KEY` (ou `NEXTAUTH_SECRET`). Responsável técnico do XML: `RESP_TEC_CNPJ`, `RESP_TEC_CONTATO`, `RESP_TEC_EMAIL`, `RESP_TEC_FONE`.
+
+Cada chamada às APIs externas e cada notificação recebida ficam registradas (ícone de histórico na tela de contas) para diagnóstico.
+
+### Limitações conhecidas
+
+- As integrações reais não puderam ser executadas contra os serviços oficiais no ambiente de desenvolvimento (sem acesso à internet); pontos a confirmar estão marcados no código com `// Conferir na documentação`.
+- Emissão em produção exige certificado ICP-Brasil e credenciamento na SEFAZ/prefeitura; o certificado de demonstração assina, mas não é aceito pela SEFAZ.
+- Anúncios novos são criados no painel do marketplace e vinculados por SKU; NF-e é enviada automaticamente só ao Mercado Livre.
+- Valores monetários usam `Float` com proteção de centavos (todo valor é gravado arredondado em 2 casas).

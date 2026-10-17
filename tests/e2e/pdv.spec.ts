@@ -33,7 +33,7 @@ test('PDV: abre o caixa, vende e emite o cupom', async ({ page }) => {
   const done = await res.json();
 
   const dialog = page.getByRole('dialog');
-  await expect(dialog.getByText('Venda finalizada!')).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Venda finalizada!' })).toBeVisible();
   await expect(dialog.getByText(/Pedido nº \d+/)).toBeVisible();
   await expect(dialog.getByText(/NFC-e nº \d+/)).toBeVisible();
 
