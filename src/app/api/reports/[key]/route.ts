@@ -14,7 +14,7 @@ export const GET = route('relatorios', 'view', async ({ ctx, params, query }) =>
   const r = await def!.run(ctx, from, to);
   const subtitle = `${r.subtitle ? r.subtitle + ' | ' : ''}Período: ${fmtDate(from)} a ${fmtDate(to)}`;
   const format = query.get('format');
-  if (format === 'xlsx') return fileResponse(toXlsx(r.title, r.columns, r.rows), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', `${params.key}.xlsx`, false);
+  if (format === 'xlsx') return fileResponse(await toXlsx(r.title, r.columns, r.rows), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', `${params.key}.xlsx`, false);
   if (format === 'pdf') return fileResponse(Buffer.from(await tablePdf(r.title, r.columns, r.rows, subtitle, r.totals)), 'application/pdf', `${params.key}.pdf`);
   return { ...r, subtitle };
 });

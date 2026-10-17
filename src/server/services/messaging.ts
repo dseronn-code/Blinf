@@ -6,7 +6,7 @@
  *   anexos gerados na hora do envio (DANFE/XML da nota).
  * - WhatsApp: Cloud API da empresa (modelos aprovados / janela de 24 h) → senão SIMULADO.
  */
-import nodemailer from 'nodemailer';
+import nodemailer, { type Transporter } from 'nodemailer';
 import { prisma } from '@/lib/db';
 import { enqueue, registerJob } from './jobs';
 import { render } from './emailTemplates';
@@ -34,7 +34,7 @@ export async function sendTemplate(companyId: string, key: string, vars: Record<
   return sendMessage(companyId, { to: opts.to, subject: r.subject, body: r.text, html: r.html, related: opts.related, attachments: opts.attachments });
 }
 
-let envTransport: nodemailer.Transporter | null = null;
+let envTransport: Transporter | null = null;
 /** SMTP da empresa → SMTP do ambiente → null (simulado) */
 export async function emailTransport(companyId: string) {
   const acc = await getAccount(companyId, 'SMTP').catch(() => null);

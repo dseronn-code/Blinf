@@ -13,7 +13,7 @@ export const POST = route('vendas', 'edit', async ({ ctx, req }) => {
   const form = await req.formData();
   const file = form.get('file') as File | null;
   if (!file) fail(400, 'Envie o arquivo');
-  const rows = parseSheet(Buffer.from(await file!.arrayBuffer()), file!.name);
+  const rows = await parseSheet(Buffer.from(await file!.arrayBuffer()), file!.name);
   const groups = new Map<string, Record<string, string>[]>();
   rows.forEach((r, i) => {
     const k = r.pedido_externo || `linha-${i}`;

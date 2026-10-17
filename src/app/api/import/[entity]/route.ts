@@ -28,7 +28,7 @@ export const POST = route('cadastros', 'edit', async ({ ctx, params, req }) => {
   const form = await req.formData();
   const file = form.get('file') as File | null;
   if (!file) fail(400, 'Envie o arquivo');
-  const rows = parseSheet(Buffer.from(await file!.arrayBuffer()), file!.name);
+  const rows = await parseSheet(Buffer.from(await file!.arrayBuffer()), file!.name);
   const results: { line: number; ok: boolean; message: string }[] = [];
   const changed: string[] = [];
   for (const [i, r] of rows.entries()) {
