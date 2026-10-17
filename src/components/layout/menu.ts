@@ -57,6 +57,8 @@ export const MENU: MenuGroup[] = [
       { label: 'NFC-e (modelo 65)', href: '/fiscal/notas?model=NFCE' },
       { label: 'NFS-e', href: '/fiscal/notas?model=NFSE' },
       { label: 'Emitir nota avulsa', href: '/fiscal/nova' },
+      { label: 'MDF-e (manifesto de carga)', href: '/fiscal/mdfe' },
+      { label: 'GNRE (guias de outros estados)', href: '/fiscal/gnre' },
       { label: 'Manifestação do destinatário', href: '/fiscal/manifestacao' },
       { label: 'Inutilização de numeração', href: '/fiscal/inutilizacao' },
       { label: 'Arquivos do contador (SPED)', href: '/fiscal/contador' },

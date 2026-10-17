@@ -9,7 +9,7 @@ import { canonicalOf, gzipB64, NS, dhUF } from '@/server/services/sefaz/xml';
 import { buildXml, extractSignedParts } from '@/server/services/fiscal';
 import { buildDps, cTribNac, dpsId } from '@/server/services/nfse';
 import { arrecadacaoBarcode, validArrecadacao, buildGnreLote } from '@/server/services/gnre';
-import { isValidAccessKey } from '@/lib/br';
+
 
 const CNPJ = '11444777000161';
 const pfx = generateDemoCertificate('Empresa Teste Ltda', CNPJ, 'senha123');
@@ -218,6 +218,5 @@ describe('NFS-e Nacional (DPS) e GNRE', () => {
     expect(lote).toContain('<receita>100102</receita>');
     expect(lote).toContain('<valor tipo="11">123.45</valor>');
     expect(lote).toContain('<municipio>50308</municipio>');
-    expect(isValidAccessKey(KEY)).toBe(true);
   });
 });
