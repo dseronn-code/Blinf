@@ -6,13 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input, Label } from '@/components/ui/input';
 import { Dialog } from '@/components/ui/dialog';
 
-const DEMO = [
-  { label: 'Administrador', email: 'admin@gestaopro.com.br', password: 'admin123' },
-  { label: 'Vendedor', email: 'vendedor@gestaopro.com.br', password: 'demo123' },
-  { label: 'Financeiro', email: 'financeiro@gestaopro.com.br', password: 'demo123' },
-  { label: 'Estoquista', email: 'estoque@gestaopro.com.br', password: 'demo123' },
-  { label: 'Contador', email: 'contador@gestaopro.com.br', password: 'demo123' },
-];
+// Acesso rápido só no ambiente de desenvolvimento (DEMO_MODE); em produção o usuário de demonstração digita teste123
+const DEMO = [{ label: 'Demonstração', email: 'teste123', password: 'senha123' }];
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -22,7 +17,6 @@ export default function LoginPage() {
   useEffect(() => {
     fetch('/api/public/config').then((r) => r.json()).then((d) => {
       setCfg(d);
-      if (d.setupNeeded) window.location.href = '/primeiro-acesso';
     }).catch(() => {});
   }, []);
   const [error, setError] = useState('');
@@ -81,7 +75,7 @@ export default function LoginPage() {
             <h2 className="text-2xl font-bold">Entrar</h2>
             <p className="text-sm text-muted-foreground">Acesse sua conta GestãoPro</p>
           </div>
-          <div><Label>E-mail</Label><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div>
+          <div><Label>E-mail ou usuário</Label><Input type="text" autoComplete="username" autoCapitalize="none" value={email} onChange={(e) => setEmail(e.target.value)} required /></div>
           <div>
             <div className="flex items-center justify-between"><Label>Senha</Label><button type="button" className="mb-1 text-xs text-primary hover:underline" onClick={() => setForgot({ email })}>Esqueci minha senha</button></div>
             <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />

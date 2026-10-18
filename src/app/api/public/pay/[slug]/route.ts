@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { orgIsDemo } from '@/server/demoContext';
 import { emit } from '@/server/events';
 import { toErrorResponse, HttpError } from '@/server/http';
 import { defaultBankAccount } from '@/server/services/finance';
 import { paymentAccount, gatewayFor } from '@/server/services/payments';
-import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
+import { isDemoMode, requireRealOrDemo, enterDemo } from '@/lib/demo';
 
 type P = { params: Promise<{ slug: string }> };
 
@@ -12,6 +13,7 @@ type P = { params: Promise<{ slug: string }> };
 export async function GET(_req: Request, { params }: P) {
   const { slug } = await params;
   const link = await prisma.paymentLink.findUnique({ where: { slug } });
+  enterDemo(await orgIsDemo(link?.companyId));
   if (!link) return NextResponse.json({ error: 'Link não encontrado' }, { status: 404 });
   const company = await prisma.company.findUnique({ where: { id: link.companyId }, select: { name: true, tradeName: true, cnpj: true, logoColor: true } });
   // Cobrança real (Asaas/Mercado Pago) vinculada ao título, quando houver provedor conectado
@@ -28,6 +30,7 @@ export async function POST(req: Request, { params }: P) {
     const { slug } = await params;
     const body = await req.json().catch(() => ({}));
     const link = await prisma.paymentLink.findUnique({ where: { slug } });
+    enterDemo(await orgIsDemo(link?.companyId));
     if (!link) throw new HttpError(404, 'Link não encontrado');
     if (link.status !== 'ATIVO') throw new HttpError(400, `Link ${link.status.toLowerCase()}`);
     // Com provedor real conectado, só o provedor confirma o pagamento (webhook)

@@ -1,3 +1,5 @@
+import { enterDemo } from '@/lib/demo';
+import { storeIsDemo } from '@/server/demoContext';
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { toErrorResponse } from '@/server/http';
@@ -10,6 +12,7 @@ const cookieName = (slug: string) => `gp_cli_${slug}`;
 /** Área do cliente da loja: GET pedidos | POST login (e-mail + CPF/CNPJ) | DELETE sair */
 export async function GET(_req: Request, { params }: P) {
   try {
+    enterDemo(await storeIsDemo((await params).slug));
     const { slug } = await params;
     const id = verifyCustomerToken(slug, (await cookies()).get(cookieName(slug))?.value);
     if (!id) return NextResponse.json({ logged: false });
@@ -21,6 +24,7 @@ export async function GET(_req: Request, { params }: P) {
 
 export async function POST(req: Request, { params }: P) {
   try {
+    enterDemo(await storeIsDemo((await params).slug));
     const { slug } = await params;
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0] || 'local';
     if (!rateLimit(`store-login:${ip}`, 10, 10 * 60_000).ok) return NextResponse.json({ error: 'Muitas tentativas. Aguarde alguns minutos.' }, { status: 429 });

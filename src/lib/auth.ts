@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from './db';
 import { verifyTotp } from './totp';
 import { rateLimit } from './rateLimit';
-import { isDemoMode, WEAK_PASSWORDS } from './demo';
+import { isDemoServer, WEAK_PASSWORDS } from './demo';
 
 /**
  * Autenticação por e-mail/senha (NextAuth + JWT), com segundo fator (TOTP)
@@ -33,7 +33,7 @@ export const authOptions: NextAuthOptions = {
         if (!credentials?.email || !credentials.password) return null;
         const email = credentials.email.toLowerCase().trim();
         if (!rateLimit(`login:${email}`, 10, 15 * 60_000).ok) throw new Error('Muitas tentativas. Aguarde 15 minutos.');
-        const user = await prisma.user.findUnique({ where: { email } });
+        const user = await prisma.user.findUnique({ where: { email }, include: { organization: { select: { demo: true } } } });
         if (!user || !user.active) return null;
         const ok = await bcrypt.compare(credentials.password, user.passwordHash);
         if (!ok) return null;
@@ -43,7 +43,7 @@ export const authOptions: NextAuthOptions = {
         }
         await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
         // Fora do modo demonstração, senha padrão/fraca obriga a troca antes de usar o sistema
-        const mustChangePassword = !isDemoMode() && (WEAK_PASSWORDS.includes(credentials.password) || credentials.password.length < 8);
+        const mustChangePassword = !user.organization.demo && !isDemoServer() && (WEAK_PASSWORDS.includes(credentials.password) || credentials.password.length < 8);
         return { id: user.id, name: user.name, email: user.email, mustChangePassword };
       },
     }),

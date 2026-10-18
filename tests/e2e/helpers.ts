@@ -1,12 +1,12 @@
 import { expect, type Page } from '@playwright/test';
 
-export const ADMIN = { email: 'admin@gestaopro.com.br', password: 'admin123' };
-export const CONTADOR = { email: 'contador@gestaopro.com.br', password: 'demo123' };
+/** Usuário de demonstração criado pelo seed (única conta da organização de demonstração) */
+export const ADMIN = { email: 'teste123', password: 'senha123' };
 
 /** Login pela tela (NextAuth credentials) e espera o painel carregar */
 export async function login(page: Page, user = ADMIN) {
   await page.goto('/login');
-  await page.locator('input[type="email"]').first().fill(user.email);
+  await page.locator('input[autocomplete="username"]').first().fill(user.email);
   await page.locator('input[type="password"]').first().fill(user.password);
   await page.getByRole('button', { name: 'Entrar', exact: true }).click();
   await page.waitForURL((u) => !u.pathname.startsWith('/login'), { timeout: 60_000 });

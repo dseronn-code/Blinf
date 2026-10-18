@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { enterDemo } from '@/lib/demo';
+import { orgIsDemo } from '@/server/demoContext';
 import { toErrorResponse, HttpError } from '@/server/http';
 import { appUrl } from '@/server/integrations/accounts';
 import { paymentAccount, createCharge, type ChargeMethod } from '@/server/services/payments';
@@ -12,6 +14,7 @@ export async function POST(req: Request, { params }: P) {
     const { slug } = await params;
     const body = await req.json().catch(() => ({}));
     const link = await prisma.paymentLink.findUnique({ where: { slug } });
+    enterDemo(await orgIsDemo(link?.companyId));
     if (!link) throw new HttpError(404, 'Link não encontrado');
     if (link.status !== 'ATIVO') throw new HttpError(400, `Link ${link.status.toLowerCase()}`);
     if (!link.entryId) throw new HttpError(400, 'Link sem conta a receber vinculada');

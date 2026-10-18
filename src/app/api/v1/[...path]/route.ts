@@ -5,6 +5,7 @@
 import crypto from 'crypto';
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
+import { enterDemo } from '@/lib/demo';
 import { toErrorResponse, HttpError } from '@/server/http';
 import { openapi } from '@/server/openapi';
 import { getAvailability, moveStock, adjustStock } from '@/server/services/stock';
@@ -28,7 +29,7 @@ async function auth(req: Request) {
   if (!rl.ok) throw new HttpError(429, `Limite de requisições excedido. Tente novamente em ${Math.ceil((rl.reset - Date.now()) / 1000)} s`);
   await prisma.apiKey.update({ where: { id: k.id }, data: { lastUsedAt: new Date() } });
   const company = await prisma.company.findUnique({ where: { id: k.companyId }, include: { organization: true } });
-  return { companyId: company!.id, orgId: company!.organizationId, stockMode: company!.organization.stockMode, userName: `API (${k.name})` };
+  return { companyId: company!.id, orgId: company!.organizationId, stockMode: company!.organization.stockMode, userName: `API (${k.name})`, demo: company!.organization.demo };
 }
 
 async function handle(req: Request, { params }: P) {
@@ -36,6 +37,7 @@ async function handle(req: Request, { params }: P) {
     const path = (await params).path || [];
     if (path[0] === 'openapi.json') return NextResponse.json(openapi);
     const a = await auth(req);
+    enterDemo(a.demo);
     const url = new URL(req.url);
     const body = req.method === 'GET' ? {} : await req.json().catch(() => ({}));
     const [res, id, sub] = path;

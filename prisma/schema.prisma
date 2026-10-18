@@ -31,6 +31,9 @@ model Organization {
   name      String
   /// UNIFICADO = saldo disponível soma depósitos de todas as empresas; SEPARADO = por empresa
   stockMode String   @default("SEPARADO")
+  /// Organização de demonstração (dados fictícios, integrações simuladas). Os usuários dela
+  /// usam o sistema em modo demonstração; as demais organizações são produção real.
+  demo      Boolean  @default(false)
   createdAt DateTime @default(now())
 
   companies Company[]

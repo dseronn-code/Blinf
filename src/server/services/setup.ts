@@ -54,23 +54,15 @@ async function create(input: SetupInput) {
   return { organizationId: org.id, companyId: company.id, userId: user.id, email: user.email };
 }
 
-/** Primeiro acesso: só funciona com o banco vazio */
+/** Primeiro acesso: só funciona enquanto não houver empresa real (a organização de demonstração não conta) */
 export async function firstSetup(input: SetupInput) {
   validateSetup(input);
-  if (await prisma.organization.count()) fail(409, 'O GestãoPro já foi configurado. Entre com o seu usuário.');
+  if (await prisma.organization.count({ where: { demo: false } })) fail(409, 'O GestãoPro já foi configurado. Entre com o seu usuário.');
   return create(input);
 }
 
 export async function setupNeeded() {
-  return (await prisma.organization.count()) === 0;
-}
-
-/** Apaga TODOS os dados (inclusive demonstração) e recomeça com a empresa informada */
-export async function resetEverything(input: SetupInput) {
-  validateSetup(input);
-  const tables = await prisma.$queryRaw<{ tablename: string }[]>`SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename <> '_prisma_migrations'`;
-  await prisma.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t.tablename}"`).join(',')} RESTART IDENTITY CASCADE`);
-  return create(input);
+  return (await prisma.organization.count({ where: { demo: false } })) === 0;
 }
 
 /** Exportação completa (backup lógico em JSON) de todas as tabelas */

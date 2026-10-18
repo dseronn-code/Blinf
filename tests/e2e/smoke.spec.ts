@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { login, trackErrors, expectHealthy, CONTADOR } from './helpers';
+import { login, trackErrors, expectHealthy } from './helpers';
 
 const PAGES = [
   '/', '/vendas', '/vendas/novo', '/vendas/propostas', '/vendas/contratos', '/vendas/contratos/novo', '/pdv',
@@ -34,19 +34,10 @@ test.describe('smoke', () => {
     expect((await request.get('/offline.html')).ok()).toBeTruthy();
   });
 
-  test('contador consulta fiscal e arquivos, mas não acessa o PDV', async ({ page }) => {
-    await login(page, CONTADOR);
-    await page.goto('/fiscal/contador');
-    await expectHealthy(page);
-    await expect(page.getByRole('heading', { name: 'Arquivos para o contador' })).toBeVisible();
-    const sped = await page.request.get('/api/fiscal/files?type=sped');
-    expect(sped.status()).toBe(200);
-    const notas = await page.request.get('/api/invoices');
-    expect(notas.status()).toBe(200);
-    const { rows } = await notas.json();
-    const auth = rows?.find((r: { status: string }) => r.status === 'AUTORIZADA');
-    if (auth) expect((await page.request.get(`/api/invoices/${auth.id}/xml`)).status()).toBe(200);
-    expect((await page.request.get('/api/pdv')).status()).toBe(403);
-    expect((await page.request.post('/api/contracts', { data: {} })).status()).toBe(403);
+  test('usuário teste123 entra na organização de demonstração', async ({ page }) => {
+    await login(page);
+    const me = await (await page.request.get('/api/me')).json();
+    expect(me.demo).toBe(true);
+    expect((await page.request.get('/api/system/backup')).status()).toBe(403);
   });
 });

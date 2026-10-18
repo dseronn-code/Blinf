@@ -8,6 +8,7 @@
  * Uso: npm run db:seed   (use SEED_FORCE=1 para recriar mesmo com dados)
  */
 import { prisma } from '../src/lib/db';
+import { runWithDemo } from '../src/lib/demo';
 import bcrypt from 'bcryptjs';
 import { DEFAULT_ROLES } from '../src/lib/permissions';
 import { generateCPF, buildEan13 } from '../src/lib/br';
@@ -119,16 +120,53 @@ async function setupCompany(orgId: string, data: { name: string; tradeName: stri
   return company;
 }
 
-async function main() {
-  const existing = await prisma.organization.count();
-  if (existing && !process.env.SEED_FORCE) {
-    console.log('Banco já possui dados — seed ignorado (use SEED_FORCE=1 para recriar).');
+/**
+ * Organização de DEMONSTRAÇÃO (dados fictícios, integrações simuladas) com um único
+ * usuário: login "teste123" / senha "senha123". Ela é criada AO LADO das empresas
+ * reais, sem apagar nada; os demais usuários do sistema continuam em produção.
+ */
+const TEST_USER = { login: 'teste123', password: 'senha123' };
+const DEMO_ORG = 'Grupo Demo GestãoPro';
+
+/** Deixa a organização de demonstração só com o usuário de teste (admin) */
+async function ensureTestUser(orgId: string) {
+  const role = await prisma.role.findFirst({ where: { organizationId: orgId, isAdmin: true } });
+  if (!role) return;
+  const companies = await prisma.company.findMany({ where: { organizationId: orgId }, select: { id: true } });
+  // usuários fictícios antigos (admin@gestaopro..., vendedor@...) deixam de existir: só o teste123 é de demonstração
+  const others = await prisma.user.findMany({ where: { organizationId: orgId, email: { not: TEST_USER.login } }, select: { id: true } });
+  if (others.length) {
+    await prisma.userCompany.deleteMany({ where: { userId: { in: others.map((u) => u.id) } } });
+    await prisma.user.deleteMany({ where: { id: { in: others.map((u) => u.id) } } });
+    log(`${others.length} usuário(s) fictício(s) antigo(s) removido(s) da demonstração`);
+  }
+  const existing = await prisma.user.findUnique({ where: { email: TEST_USER.login } });
+  if (existing && existing.organizationId !== orgId) {
+    log(`Login ${TEST_USER.login} já usado fora da demonstração — não alterado`);
     return;
   }
-  console.log('🌱 Recriando dados de demonstração...');
-  await wipe();
+  if (!existing) {
+    await prisma.user.create({ data: { organizationId: orgId, roleId: role.id, name: 'Usuário de Teste (demonstração)', email: TEST_USER.login, passwordHash: await bcrypt.hash(TEST_USER.password, 10), companies: { create: companies.map((c) => ({ companyId: c.id })) } } });
+    log(`Usuário de demonstração: ${TEST_USER.login} / ${TEST_USER.password}`);
+  }
+}
 
-  const org = await prisma.organization.create({ data: { name: 'Grupo Demo GestãoPro', stockMode: 'SEPARADO' } });
+async function main() {
+  // Bancos antigos: a organização de demonstração criada antes desta versão é marcada como demo
+  const legacy = await prisma.organization.findFirst({ where: { name: DEMO_ORG, demo: false, users: { some: { email: 'admin@gestaopro.com.br' } } } });
+  if (legacy) await prisma.organization.update({ where: { id: legacy.id }, data: { demo: true } });
+  const demoOrg = await prisma.organization.findFirst({ where: { demo: true } });
+  if (demoOrg && !process.env.SEED_FORCE) {
+    await ensureTestUser(demoOrg.id);
+    console.log('Demonstração já existe — dados mantidos (use SEED_FORCE=1 para recriar tudo).');
+    return;
+  }
+  // SEED_FORCE recria o banco inteiro; sem ele, a demonstração é criada ao lado das empresas reais
+  const wipeAll = !!process.env.SEED_FORCE;
+  console.log('🌱 Criando dados de demonstração...');
+  if (wipeAll) await wipe();
+
+  const org = await prisma.organization.create({ data: { name: DEMO_ORG, stockMode: 'SEPARADO', demo: true } });
   const roles: Record<string, string> = {};
   for (const r of DEFAULT_ROLES) roles[r.name] = (await prisma.role.create({ data: { organizationId: org.id, name: r.name, description: r.description, isAdmin: !!r.isAdmin, permissions: r.permissions } })).id;
 
@@ -142,18 +180,8 @@ async function main() {
   });
   log('Empresas:', moda.tradeName, '+', tech.tradeName);
 
-  const pass = await bcrypt.hash('demo123', 10);
-  const users = [
-    { name: 'Administrador Demo', email: 'admin@gestaopro.com.br', role: 'Administrador', pwd: await bcrypt.hash('admin123', 10) },
-    { name: 'Vanessa Vendas', email: 'vendedor@gestaopro.com.br', role: 'Vendedor', pwd: pass },
-    { name: 'Fábio Financeiro', email: 'financeiro@gestaopro.com.br', role: 'Financeiro', pwd: pass },
-    { name: 'Eduardo Estoque', email: 'estoque@gestaopro.com.br', role: 'Estoquista', pwd: pass },
-  ];
-  for (const u of users) {
-    const user = await prisma.user.create({ data: { organizationId: org.id, roleId: roles[u.role], name: u.name, email: u.email, passwordHash: u.pwd } });
-    await prisma.userCompany.createMany({ data: [{ userId: user.id, companyId: moda.id }, { userId: user.id, companyId: tech.id }] });
-  }
-  log('Usuários: admin@gestaopro.com.br / admin123 (+ vendedor, financeiro, estoque / demo123)');
+  // Único usuário da demonstração
+  await ensureTestUser(org.id);
 
   // ---------------- Cadastros ----------------
   const sellers = await Promise.all([
@@ -315,7 +343,7 @@ async function main() {
   for (const p of [...camiseta.children, simples.bone, simples.meia]) await moveStock(prisma, { companyId: moda.id, productId: p.id, warehouseId: whLoja!.id, quantity: 25, direction: 'IN', origin: 'INVENTARIO', notes: 'Estoque da loja física' });
   // Um item propositalmente com estoque baixo (ruptura)
   await moveStock(prisma, { companyId: moda.id, productId: simples.relogio.id, warehouseId: whModa!.id, quantity: (await prisma.stockBalance.findFirst({ where: { productId: simples.relogio.id, warehouseId: whModa!.id } }))!.quantity - 2, direction: 'OUT', type: 'AJUSTE', origin: 'INVENTARIO', notes: 'Ajuste de inventário' });
-  await prisma.stockMovement.updateMany({ data: { createdAt: addDays(new Date(), -95) } });
+  await prisma.stockMovement.updateMany({ where: { companyId: { in: [moda.id, tech.id] } }, data: { createdAt: addDays(new Date(), -95) } });
   log('Estoque inicial lançado');
 
   // ---------------- Canais de venda ----------------
@@ -417,7 +445,7 @@ async function main() {
   log(`${orderCount} pedidos de venda processados (reserva → NF → estoque → financeiro → envio)`);
 
   // Baixa de recebíveis passados (85% pagos; demais ficam inadimplentes)
-  const pastReceivables = await prisma.financialEntry.findMany({ where: { type: 'RECEBER', status: 'ABERTO', dueDate: { lt: new Date() } } });
+  const pastReceivables = await prisma.financialEntry.findMany({ where: { companyId: { in: [moda.id, tech.id] }, type: 'RECEBER', status: 'ABERTO', dueDate: { lt: new Date() } } });
   for (const e of pastReceivables) {
     if (Math.random() < 0.85) {
       await payEntry(e.companyId, org.id, e.id, { date: e.dueDate, method: e.paymentMethod });
@@ -426,7 +454,7 @@ async function main() {
     }
   }
   // Tarifas de marketplace pagas
-  for (const e of await prisma.financialEntry.findMany({ where: { type: 'PAGAR', status: 'ABERTO', origin: 'INTEGRACAO', dueDate: { lt: new Date() } } })) {
+  for (const e of await prisma.financialEntry.findMany({ where: { companyId: { in: [moda.id, tech.id] }, type: 'PAGAR', status: 'ABERTO', origin: 'INTEGRACAO', dueDate: { lt: new Date() } } })) {
     await payEntry(e.companyId, org.id, e.id, { date: e.dueDate });
     await prisma.bankTransaction.updateMany({ where: { entryId: e.id }, data: { date: e.dueDate } });
   }
@@ -622,9 +650,7 @@ async function main() {
       if (b.invoiceId) await prisma.invoice.update({ where: { id: b.invoiceId }, data: { issueDate: addDays(due, -3), authorizedAt: addDays(due, -3) } });
       if (due < monthStart) await payEntry(tech.id, org.id, b.entryId!, { date: addDays(due, randomInt(-2, 3)) }).catch(() => {});
     }
-    const contador = await prisma.user.create({ data: { organizationId: org.id, roleId: roles['Contador'], name: 'Carla Contadora (Exato Contabilidade)', email: 'contador@gestaopro.com.br', passwordHash: pass } });
-    await prisma.userCompany.createMany({ data: [{ userId: contador.id, companyId: moda.id }, { userId: contador.id, companyId: tech.id }] });
-    log('Contratos recorrentes na TechCasa e usuário contador@gestaopro.com.br / demo123 (perfil Contador)');
+    log('Contratos recorrentes na TechCasa');
   }
 
   await prisma.notification.createMany({ data: [
@@ -645,7 +671,7 @@ async function main() {
   console.log('✅ Seed concluído!');
 }
 
-main()
+runWithDemo(true, () => main())
   .catch((e) => {
     console.error(e);
     process.exit(1);

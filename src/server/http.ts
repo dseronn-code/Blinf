@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db';
 import type { AccessLevel, ModuleKey } from '@/lib/permissions';
 
 import { HttpError } from './errors';
-import { RealIntegrationRequired, isDemoMode } from '@/lib/demo';
+import { RealIntegrationRequired, runWithDemo } from '@/lib/demo';
 export { HttpError, fail } from './errors';
 
 export function toErrorResponse(e: unknown) {
@@ -45,7 +45,8 @@ export function route(mod: ModuleKey | null, level: AccessLevel, fn: Handler) {
         if (ct.includes('application/json')) body = await req.json().catch(() => ({}));
       }
       const query = new URL(req.url).searchParams;
-      const result = await fn({ req, ctx, params, body, query });
+      // Demonstração vale só para a organização de demonstração (ex.: usuário teste123)
+      const result = await runWithDemo(ctx.demo, () => fn({ req, ctx, params, body, query }));
       if (req.method !== 'GET') audit(ctx, req, params, body).catch(() => {});
       if (result instanceof Response) return result;
       return NextResponse.json(result ?? { ok: true });

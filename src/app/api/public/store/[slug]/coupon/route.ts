@@ -1,3 +1,5 @@
+import { enterDemo } from '@/lib/demo';
+import { storeIsDemo } from '@/server/demoContext';
 import { NextResponse } from 'next/server';
 import { toErrorResponse } from '@/server/http';
 import { storeBySlug } from '@/server/services/store';
@@ -6,6 +8,7 @@ import { evaluateCoupon } from '@/server/services/operations';
 /** Valida um cupom no carrinho (o desconto é recalculado no checkout) */
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
+    enterDemo(await storeIsDemo((await params).slug));
     const { company } = await storeBySlug((await params).slug);
     const body = await req.json().catch(() => ({}));
     const r = await evaluateCoupon(company.id, body.code, Number(body.subtotal) || 0);
