@@ -6,8 +6,9 @@
  * (versão 2.00) e uma conta a pagar ligada à guia (origem GNRE).
  * Com fiscalProvider = SEFAZ o lote é enviado ao Portal GNRE (GnreLoteRecepcao
  * + GnreResultadoLote, com o certificado A1) e o código de barras vem do
- * retorno; nos demais casos o código de barras (padrão de arrecadação
- * FEBRABAN, iniciado por 8) é SIMULADO.
+ * retorno; nos demais casos, só no modo demonstração, o código de barras
+ * (padrão de arrecadação FEBRABAN, iniciado por 8) é SIMULADO — em produção a
+ * guia fica PENDENTE, sem código, para emissão manual no Portal GNRE.
  */
 import type { Company, Gnre, Invoice } from '@prisma/client';
 import { prisma } from '@/lib/db';
@@ -18,6 +19,7 @@ import { onEvent } from '../events';
 import { createEntries, payEntry, cancelEntriesByOrigin } from './finance';
 import type { Actor } from './sales';
 import { fiscalProviderOf } from './fiscal';
+import { isDemoMode } from '@/lib/demo';
 import { sefazCtx } from './sefaz/nfe';
 import { soapCall } from './sefaz/soap';
 import { gnreUrl } from './sefaz/urls';
@@ -120,12 +122,18 @@ export async function consultLote(company: Company, recibo: string) {
 // ---------------------------------------------------------------------------
 // Serviço
 // ---------------------------------------------------------------------------
+/** Orientação para a guia sem envio automático (produção sem SEFAZ direta) */
+export const GNRE_MANUAL = 'Pendente — emita a guia no Portal GNRE (www.gnre.pe.gov.br) e registre o pagamento aqui. Para envio automático, use a emissão SEFAZ direta com certificado A1.';
+
 async function createGuias(company: Company, inv: Invoice, due: ReturnType<typeof gnreDue>, userName?: string) {
   const dueDate = new Date();
   const customer = inv.customerId ? await prisma.contact.findUnique({ where: { id: inv.customerId } }) : null;
   const destCityCode = customer?.city ? localCityCode(customer.uf, customer.city) || (await resolveCityCode(customer.uf, customer.city, { companyId: company.id, online: fiscalProviderOf(company) === 'SEFAZ' })) : null;
   const xml = buildGnreLote(company, inv, due.map((d) => ({ ...d, dueDate })), { destCityCode });
   const real = fiscalProviderOf(company) === 'SEFAZ';
+  // Sem envio real ao Portal GNRE: o código de barras fictício existe só no modo demonstração.
+  // Em produção a guia fica PENDENTE, sem código — o usuário emite no portal e registra o pagamento.
+  const simulate = !real && isDemoMode();
   let result: Awaited<ReturnType<typeof sendLote>> | null = null;
   if (real) {
     try {
@@ -137,10 +145,10 @@ async function createGuias(company: Company, inv: Invoice, due: ReturnType<typeo
   const created: Gnre[] = [];
   for (const [idx, d] of due.entries()) {
     const ret = result?.ok ? result.guias[idx] : undefined;
-    const sim = arrecadacaoBarcode({ amount: d.amount, uf: d.uf, dueDate, revenueCode: d.revenueCode, ref: `${inv.number}${randomDigits(3)}` });
-    const barcode = real ? ret?.barcode || null : sim.barcode;
-    const line = real ? ret?.line || null : sim.formatted;
-    const reference = real ? (result?.ok ? `Recibo ${result.recibo}${ret?.errors ? ` — ${ret.errors}` : ''}` : `Falha no envio: ${result?.message}`) : 'Código de barras SIMULADO (sem envio ao Portal GNRE)';
+    const sim = simulate ? arrecadacaoBarcode({ amount: d.amount, uf: d.uf, dueDate, revenueCode: d.revenueCode, ref: `${inv.number}${randomDigits(3)}` }) : null;
+    const barcode = real ? ret?.barcode || null : sim?.barcode || null;
+    const line = real ? ret?.line || null : sim?.formatted || null;
+    const reference = real ? (result?.ok ? `Recibo ${result.recibo}${ret?.errors ? ` — ${ret.errors}` : ''}` : `Falha no envio: ${result?.message}`) : simulate ? 'Código de barras SIMULADO (sem envio ao Portal GNRE)' : GNRE_MANUAL;
     const g = await prisma.gnre.create({ data: { companyId: company.id, invoiceId: inv.id, uf: d.uf, revenueCode: d.revenueCode, amount: d.amount, dueDate, reference, barcode, line, status: barcode ? 'GERADA' : 'PENDENTE', xml } });
     await createEntries(prisma, {
       companyId: company.id, type: 'PAGAR', description: `GNRE ${d.uf} ${d.revenueCode} - NF-e ${inv.number}`, contactName: `SEFAZ-${d.uf}`, total: d.amount, firstDueDate: dueDate,
@@ -148,7 +156,7 @@ async function createGuias(company: Company, inv: Invoice, due: ReturnType<typeo
     });
     created.push(g);
   }
-  await prisma.invoiceEvent.create({ data: { invoiceId: inv.id, type: 'GNRE', description: `GNRE gerada para ${due[0].uf}: ${due.map((d) => `${d.revenueCode} R$ ${d.amount.toFixed(2).replace('.', ',')}`).join(', ')}${real ? (result?.ok ? ` (recibo ${result.recibo})` : ` — envio ao Portal GNRE falhou: ${result?.message}`) : ' (código de barras simulado)'}${userName ? ` por ${userName}` : ''}` } });
+  await prisma.invoiceEvent.create({ data: { invoiceId: inv.id, type: 'GNRE', description: `GNRE gerada para ${due[0].uf}: ${due.map((d) => `${d.revenueCode} R$ ${d.amount.toFixed(2).replace('.', ',')}`).join(', ')}${real ? (result?.ok ? ` (recibo ${result.recibo})` : ` — envio ao Portal GNRE falhou: ${result?.message}`) : simulate ? ' (código de barras simulado)' : ' — pendente: emita a guia no Portal GNRE'}${userName ? ` por ${userName}` : ''}` } });
   return created;
 }
 

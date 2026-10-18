@@ -2,7 +2,11 @@
  * Logística: cotação de frete, etiquetas e rastreio.
  * - Real: Melhor Envio e Correios (contrato) quando a empresa conecta a conta
  *   em Integrações → Contas (cotação, compra da etiqueta, PDF oficial, rastreio).
- * - Simulado: sem conta conectada, fórmula própria, código UPU e eventos simulados.
+ * - Manual (sempre disponível): frete próprio / transportadora própria / retirada — valor
+ *   digitado, etiqueta de endereçamento sem código inventado, postagem/entrega marcadas
+ *   pelo usuário (código de rastreio opcional digitado à mão).
+ * - Simulado (só no modo demonstração): sem conta conectada, fórmula própria, código UPU e
+ *   eventos simulados. Em produção nada disso é inventado.
  */
 import { PDFDocument } from 'pdf-lib';
 import type { Shipment, SalesOrder, Company } from '@prisma/client';
@@ -10,6 +14,7 @@ import { prisma } from '@/lib/db';
 import { round2, onlyDigits, addDays, num } from '@/lib/utils';
 import { buildTrackingCode, cepRegion } from '@/lib/br';
 import { fail } from '../errors';
+import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
 import { emit } from '../events';
 import { getAccount } from '../integrations/accounts';
 import type { AccountCtx } from '../integrations/types';
@@ -18,10 +23,22 @@ import { correiosQuote, correiosBuyLabel, correiosTracking, correiosLabelPdf, co
 import { shippingLabelPdf } from '../pdf';
 import type { Actor } from './sales';
 
-export type FreightOption = { provider: string; carrier: string; service: string; price: number; deadlineDays: number; simulated: boolean; serviceId?: string };
+export type FreightOption = { provider: string; carrier: string; service: string; price: number; deadlineDays: number; simulated: boolean; serviceId?: string; manual?: boolean };
 export type QuoteParams = { fromZip: string; toZip: string; weight: number; height?: number; width?: number; length?: number; value?: number };
 const REAL = ['MELHOR_ENVIO', 'CORREIOS'] as const;
 
+/** Frete próprio / transportadora própria / retirada: sem provedor, valor informado pelo usuário */
+export const MANUAL_PROVIDER = 'PROPRIO';
+export const FREIGHT_HOWTO = 'conecte o Melhor Envio ou os Correios em Integrações → Contas e credenciais, ou use "Frete próprio / retirada"';
+export function manualFreightOptions(price = 0): FreightOption[] {
+  return [
+    { provider: MANUAL_PROVIDER, carrier: 'Frete próprio', service: 'Frete próprio / transportadora própria', price: round2(price), deadlineDays: 0, simulated: false, manual: true },
+    { provider: MANUAL_PROVIDER, carrier: 'Retirada', service: 'Retirada no local', price: 0, deadlineDays: 0, simulated: false, manual: true },
+  ];
+}
+export const isManualShipment = (s: { provider: string }) => s.provider === MANUAL_PROVIDER;
+
+/** Tabela fictícia (fórmula própria) — usada só no modo demonstração */
 export function quoteFreight(p: { fromZip: string; toZip: string; weight: number; height?: number; width?: number; length?: number; value?: number }): FreightOption[] {
   const from = onlyDigits(p.fromZip || '01000000');
   const to = onlyDigits(p.toZip || '01000000');
@@ -60,16 +77,22 @@ function quoteWith(acc: AccountCtx, p: QuoteParams) {
   return acc.provider === 'MELHOR_ENVIO' ? meQuote(acc, p) : correiosQuote(acc, p);
 }
 
-/** Cotação detalhada: opções reais + erros por provedor (sem conta → simulação) */
+/**
+ * Cotação detalhada: opções reais + erros por provedor.
+ * Sem conta (ou com todas falhando) → simulação no modo demonstração; em produção, nenhuma
+ * opção inventada (options vazio). `manual` traz sempre o frete próprio / retirada.
+ */
 export async function quoteFreightDetailed(companyId: string, p: QuoteParams) {
   const accounts = await realAccounts(companyId);
-  if (!accounts.length) return { real: false, options: quoteFreight(p), errors: [] as string[] };
+  const manual = manualFreightOptions();
+  const fallback = () => (isDemoMode() ? quoteFreight(p) : []);
+  if (!accounts.length) return { real: false, options: fallback(), errors: [] as string[], manual };
   const results = await Promise.allSettled(accounts.map((a) => quoteWith(a, p)));
   const options: FreightOption[] = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])).filter((o) => o.price > 0);
   const errors = results.flatMap((r) => (r.status === 'rejected' ? [(r.reason as Error).message] : []));
-  // Todas as contas falharam: mantém a operação com a cotação simulada
-  if (!options.length) return { real: false, options: quoteFreight(p), errors };
-  return { real: true, options: options.sort((a, b) => a.price - b.price), errors };
+  // Todas as contas falharam: na demonstração mantém a cotação simulada; em produção, só os erros
+  if (!options.length) return { real: false, options: fallback(), errors, manual };
+  return { real: true, options: options.sort((a, b) => a.price - b.price), errors, manual };
 }
 
 export async function quoteFreightFor(companyId: string, p: QuoteParams): Promise<FreightOption[]> {
@@ -95,7 +118,25 @@ export async function orderPackage(orderId: string) {
   return { order: order!, weight: round2(Math.max(weight, 0.1)), height, width, length };
 }
 
-export type FreightChoice = { provider: string; carrier?: string; service: string; serviceId?: string } | null;
+export type FreightChoice = { provider: string; carrier?: string; service: string; serviceId?: string; price?: number | string | null; trackingCode?: string | null } | null;
+
+/** Envio manual (frete próprio / transportadora própria / retirada): sem etiqueta do provedor nem código inventado */
+async function createManualShipment(actor: Actor, order: SalesOrder, pkg: { weight: number; height: number; width: number; length: number }, choice: FreightChoice, city: string) {
+  const price = choice?.price != null && choice.price !== '' ? round2(Number(choice.price) || 0) : order.freight || 0;
+  const carrier = choice?.carrier || order.carrier || 'Frete próprio';
+  const service = choice?.service || 'Frete próprio / transportadora própria';
+  const trackingCode = choice?.trackingCode ? String(choice.trackingCode).trim().toUpperCase() || null : null;
+  const shipment = await prisma.shipment.create({
+    data: {
+      companyId: actor.companyId, salesOrderId: order.id, provider: MANUAL_PROVIDER, carrier, service, price, deadlineDays: 0, ...pkg, trackingCode,
+      status: 'ETIQUETA_GERADA',
+      events: [{ date: new Date().toISOString(), status: 'ETIQUETA_GERADA', description: `Envio registrado (${service}) — aguardando postagem/entrega`, location: city }],
+    },
+  });
+  await prisma.salesOrder.update({ where: { id: order.id }, data: { carrier, shippingService: service } });
+  await emit('shipment.label_created', { ...actor, shipmentId: shipment.id, orderId: order.id });
+  return shipment;
+}
 
 export async function createShipment(actor: Actor, orderId: string, choice?: FreightChoice) {
   const existing = await prisma.shipment.findFirst({ where: { salesOrderId: orderId, status: { not: 'CANCELADO' } } });
@@ -105,12 +146,18 @@ export async function createShipment(actor: Actor, orderId: string, choice?: Fre
   if (order.origin === 'PDV') return null; // Venda balcão não gera envio
   if (!order.items.some((i) => i.productId)) return null;
   const company = await prisma.company.findUnique({ where: { id: actor.companyId } });
+  if (choice?.provider === MANUAL_PROVIDER) return createManualShipment(actor, order, pkg, choice, company?.city || '');
   const shipTo = (order.shipTo || {}) as { zip?: string };
   const options = await quoteFreightFor(actor.companyId, { fromZip: company?.zip || '01000000', toZip: shipTo.zip || '01000000', ...pkg, value: order.total });
   const preferred =
     (choice && options.find((o) => o.provider === choice.provider && (choice.serviceId ? o.serviceId === choice.serviceId : o.service === choice.service))) ||
     (order.shippingService && options.find((o) => o.service.startsWith(order.shippingService!))) ||
     options[0];
+  // Sem cotação real (produção sem provedor): registra o envio como frete próprio, sem inventar preço/rastreio
+  if (!preferred) {
+    if (choice) fail(400, `Serviço ${choice.carrier || ''} ${choice.service} indisponível — ${FREIGHT_HOWTO}`);
+    return createManualShipment(actor, order, pkg, { provider: MANUAL_PROVIDER, carrier: order.carrier || undefined, service: order.shippingService || 'Frete próprio / transportadora própria' }, company?.city || '');
+  }
   if (!preferred.simulated) {
     // Etiqueta real: compra na hora quando escolhida pelo usuário ou com "comprar automaticamente" ligado
     const acc = await getAccount(actor.companyId, preferred.provider);
@@ -121,6 +168,8 @@ export async function createShipment(actor: Actor, orderId: string, choice?: Fre
     if (choice || acc?.settings.autoBuy) return buyShipmentLabel(actor, shipment.id, preferred.serviceId);
     return shipment;
   }
+  // Daqui em diante tudo é simulado (código de rastreio no padrão UPU): só no modo demonstração
+  requireRealOrDemo('Etiqueta de envio', FREIGHT_HOWTO);
   const prefix = preferred.carrier === 'Correios' ? (preferred.service.startsWith('SEDEX') ? 'QB' : 'PN') : preferred.carrier.slice(0, 2).toUpperCase().replace(/[^A-Z]/g, 'X');
   const trackingCode = preferred.carrier === 'Correios' ? buildTrackingCode(prefix) : `${prefix}${Date.now().toString().slice(-10)}`;
   const shipment = await prisma.shipment.create({
@@ -295,16 +344,45 @@ export async function syncProviderTracking(companyId: string, provider: string) 
   return `${list.length} envio(s) consultado(s), ${changed} atualizado(s)`;
 }
 
-/** Atualiza o rastreio: provedor real quando a etiqueta foi comprada nele; senão avança a simulação */
+/**
+ * Envio manual (frete próprio/retirada): o usuário marca postado/entregue e pode informar o
+ * código de rastreio da transportadora própria. Nada é inventado (sem local nem eventos fictícios).
+ */
+export async function markManualShipment(actor: Actor, shipmentId: string, body: { status?: string; trackingCode?: string | null } = {}) {
+  const s = await prisma.shipment.findFirst({ where: { id: shipmentId, companyId: actor.companyId } });
+  if (!s) fail(404, 'Envio não encontrado');
+  if (!isManualShipment(s!)) fail(400, 'Somente envios de frete próprio/retirada são atualizados manualmente');
+  if (['ENTREGUE', 'CANCELADO'].includes(s!.status)) fail(400, 'Envio já finalizado');
+  const code = body.trackingCode != null ? String(body.trackingCode).trim().toUpperCase() || null : undefined;
+  const target = body.status || (s!.status === 'ETIQUETA_GERADA' ? 'POSTADO' : 'ENTREGUE');
+  if (!['POSTADO', 'ENTREGUE'].includes(target) && !(target === s!.status && code !== undefined)) fail(400, 'Situação inválida (use POSTADO ou ENTREGUE)');
+  const events = [...((s!.events as object[]) || [])];
+  if (code !== undefined && code !== s!.trackingCode) events.push({ date: new Date().toISOString(), status: s!.status, description: code ? `Código de rastreio informado: ${code}` : 'Código de rastreio removido', location: '' });
+  const advance = RANK.indexOf(target) > RANK.indexOf(s!.status);
+  if (advance) events.push({ date: new Date().toISOString(), status: target, description: `${target === 'POSTADO' ? 'Marcado como postado/despachado' : 'Marcado como entregue'} por ${actor.userName || 'usuário'}`, location: '' });
+  const crossed = (st: string) => advance && RANK.indexOf(s!.status) < RANK.indexOf(st) && RANK.indexOf(target) >= RANK.indexOf(st);
+  const updated = await prisma.shipment.update({
+    where: { id: s!.id },
+    data: { ...(advance ? { status: target } : {}), events, ...(code !== undefined ? { trackingCode: code } : {}), ...(crossed('POSTADO') ? { postedAt: new Date() } : {}), ...(crossed('ENTREGUE') ? { deliveredAt: new Date() } : {}) },
+  });
+  if (crossed('POSTADO')) await emit('shipment.posted', { ...actor, shipmentId: s!.id, orderId: s!.salesOrderId });
+  if (crossed('ENTREGUE')) await emit('shipment.delivered', { ...actor, shipmentId: s!.id, orderId: s!.salesOrderId });
+  return updated;
+}
+
+/** Atualiza o rastreio: provedor real quando a etiqueta foi comprada nele; frete próprio → marcação manual; senão avança a simulação (demo) */
 export async function advanceTracking(actor: Actor, shipmentId: string) {
   const s = await prisma.shipment.findFirst({ where: { id: shipmentId, companyId: actor.companyId }, include: { salesOrder: true } });
   if (!s) fail(404, 'Envio não encontrado');
+  if (isManualShipment(s!)) return markManualShipment(actor, s!.id);
   if ((REAL as readonly string[]).includes(s!.provider) && (s!.providerRef || s!.status === 'PENDENTE')) {
     if (s!.status === 'PENDENTE') return buyShipmentLabel(actor, s!.id);
     const acc = await getAccount(actor.companyId, s!.provider);
     if (!acc) fail(400, 'Conta do provedor não conectada (Integrações → Contas)');
     return (await refreshReal(acc!, [s!]))[0];
   }
+  // Eventos de transportadora inventados: só no modo demonstração
+  requireRealOrDemo('Rastreio do envio', 'o rastreio vem do provedor em que a etiqueta foi comprada (Melhor Envio/Correios em Integrações → Contas e credenciais)');
   const order = ['ETIQUETA_GERADA', ...TRACK_FLOW.map((t) => t.status)];
   const idx = order.indexOf(s!.status);
   if (idx < 0 || idx >= order.length - 1) return s;
@@ -338,9 +416,15 @@ async function providerLabel(s: Shipment): Promise<Uint8Array> {
   return buf;
 }
 
-/** Junta as etiquetas oficiais (PDF do provedor) com as simuladas em um único PDF */
+/**
+ * Junta as etiquetas oficiais (PDF do provedor) com as etiquetas de endereçamento (frete próprio)
+ * e — só no modo demonstração — as simuladas, em um único PDF.
+ */
 export async function labelsPdf(list: { shipment: Shipment; order: SalesOrder & { customer: { name: string } }; company: Company }[]) {
   const sim = list.filter((x) => !x.shipment.labelUrl);
+  if (!isDemoMode() && sim.some((x) => !isManualShipment(x.shipment))) {
+    requireRealOrDemo('Etiqueta de envio', 'a etiqueta oficial vem do provedor (compre-a pelo Melhor Envio/Correios conectados em Integrações → Contas e credenciais); envios de frete próprio imprimem a etiqueta de endereçamento');
+  }
   const real = list.filter((x) => x.shipment.labelUrl);
   if (!real.length) return shippingLabelPdf(sim);
   const out = await PDFDocument.create();

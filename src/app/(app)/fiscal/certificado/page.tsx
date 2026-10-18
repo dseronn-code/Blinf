@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { ShieldCheck, ShieldAlert, Upload, Sparkles, Trash2, Send, WifiOff, Info, Activity, Save, AlertTriangle, Loader2 } from 'lucide-react';
 import { api, useApi, useAction } from '@/lib/api';
-import { PageHeader, Field, KV } from '@/components/common/page';
+import { PageHeader, Field, KV, useDemoMode } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input, Select, Switch } from '@/components/ui/input';
@@ -28,6 +28,9 @@ export default function Certificate() {
   const { data: c } = useApi<any>('/api/company');
   const { data: pend } = useApi<any>('/api/invoices?model=NFCE&status=CONTINGENCIA');
   const act = useAction();
+  const demoMode = useDemoMode();
+  // Em produção não existe autorização simulada: "SIMULADO" significa apenas "sem emissor configurado"
+  const providers = demoMode ? PROVIDERS : PROVIDERS.map((p) => (p.value === 'SIMULADO' ? { ...p, title: 'Sem emissor', text: 'Nenhuma nota fiscal é emitida (pedidos podem ser faturados sem nota). Escolha SEFAZ direta ou Focus NFe para emitir.' } : p));
   const [file, setFile] = useState<File | null>(null);
   const [pwd, setPwd] = useState('');
   const [busy, setBusy] = useState(false);
@@ -94,6 +97,8 @@ export default function Certificate() {
           <div>
             {real ? (
               <><b>Homologação:</b> os documentos são enviados de verdade ao ambiente de testes da SEFAZ{c?.fiscalProvider === 'FOCUS_NFE' ? ' (via Focus NFe)' : ''}, sem valor fiscal. Quando tudo estiver certo, mude para produção.</>
+            ) : !demoMode ? (
+              <><b>Nenhum emissor fiscal configurado:</b> notas fiscais (NF-e, NFC-e, NFS-e, MDF-e) não podem ser emitidas. Instale o certificado A1 e escolha <b>SEFAZ direta</b>, ou conecte a <b>Focus NFe</b> em Integrações → Contas e credenciais. Enquanto isso, os pedidos podem ser faturados sem nota.</>
             ) : (
               <><b>Simulação:</b> o arquivo .pfx/.p12 é aberto de verdade e, com ele instalado, o XML das notas é <b>realmente assinado</b> (XMLDSig RSA-SHA1); a <b>autorização</b> é simulada. Para emitir de verdade, escolha <b>SEFAZ direta</b> (com um certificado ICP-Brasil) ou <b>Focus NFe</b> abaixo.</>
             )}
@@ -106,7 +111,7 @@ export default function Certificate() {
           <CardHeader><CardTitle>Emissão de documentos fiscais</CardTitle>{real && <Badge tone={production ? 'red' : 'blue'}>{production ? '1 - Produção' : '2 - Homologação'}</Badge>}</CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-2 md:grid-cols-3">
-              {PROVIDERS.map((p) => (
+              {providers.map((p) => (
                 <button key={p.value} type="button" onClick={() => setF((x) => ({ ...x, fiscalProvider: p.value }))} className={cn('rounded-md border p-3 text-left text-xs transition', f.fiscalProvider === p.value ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:bg-muted/50')}>
                   <div className="mb-1 flex items-center justify-between text-sm font-semibold">{p.title}{c?.fiscalProvider === p.value && <Badge tone="green">atual</Badge>}</div>
                   <div className="text-muted-foreground">{p.text}</div>
@@ -171,7 +176,7 @@ export default function Certificate() {
             <KV label="Instalado em" value={fmtDate(c?.certUploadedAt)} />
             <KV label="Validade" value={installed ? <span className={days <= 30 ? 'text-red-600' : ''}>{fmtDate(c.certValidUntil)} ({days} dias)</span> : '—'} />
             <KV label="Série NF-e / NFC-e" value={c ? `${c.nfeSeries} / ${c.nfceSeries}` : '—'} />
-            <KV label="Ambiente" value={!real ? '2 - Homologação (simulado)' : production ? '1 - Produção' : '2 - Homologação'} />
+            <KV label="Ambiente" value={!real ? (demoMode ? '2 - Homologação (simulado)' : '— (sem emissor)') : production ? '1 - Produção' : '2 - Homologação'} />
             <KV label="Arquivo .pfx armazenado" value={c?.hasPfx ? 'Sim' : 'Não'} />
             <p className="col-span-2 text-xs text-muted-foreground">{mode[2]}</p>
             {installed && <Button variant="outline" className="col-span-2" disabled={busy} onClick={() => confirm('Remover o certificado? As notas voltarão a ser geradas sem assinatura (modo SIMULADO).') && act('DELETE', '/api/company/certificate', undefined, 'Certificado removido')}><Trash2 /> Remover certificado</Button>}
@@ -184,10 +189,10 @@ export default function Certificate() {
             <Field label="Arquivo do certificado (.pfx / .p12)"><input type="file" accept=".pfx,.p12" onChange={(e) => setFile(e.target.files?.[0] || null)} className="text-sm" /></Field>
             <Field label="Senha do certificado"><Input type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} autoComplete="new-password" /></Field>
             <Button disabled={!file || busy} onClick={upload}><Upload /> Instalar certificado</Button>
-            <div className="border-t pt-3">
+            {demoMode && <div className="border-t pt-3">
               <p className="mb-2 text-xs text-muted-foreground">Não tem um certificado A1 à mão? Gere um certificado <b>autoassinado de demonstração</b> com o nome e CNPJ da empresa (senha <span className="font-mono">demo1234</span>). Ele assina o XML normalmente, mas não é emitido por uma AC ICP-Brasil e <b>não é aceito pela SEFAZ</b>.</p>
               <Button variant="outline" disabled={busy} onClick={demo}><Sparkles /> Gerar certificado de demonstração</Button>
-            </div>
+            </div>}
           </CardContent>
         </Card>
 
@@ -196,7 +201,7 @@ export default function Certificate() {
           <CardContent className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
             <div className="space-y-2 text-sm">
               <div className="flex items-center gap-3">
-                <Switch checked={contingency} disabled={busy} onChange={(v) => act('PUT', '/api/company/certificate', { contingency: v }, v ? 'Contingência ativada — NFC-e serão emitidas offline' : 'Contingência desativada')} />
+                <Switch checked={contingency} disabled={busy || (!demoMode && !contingency && !(c?.fiscalProvider === 'SEFAZ' && c?.hasPfx))} onChange={(v) => act('PUT', '/api/company/certificate', { contingency: v }, v ? 'Contingência ativada — NFC-e serão emitidas offline' : 'Contingência desativada')} />
                 <span className="font-medium">Emitir NFC-e em contingência (tpEmis 9)</span>
               </div>
               <p className="text-xs text-muted-foreground">

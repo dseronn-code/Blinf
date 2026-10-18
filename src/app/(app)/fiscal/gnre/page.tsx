@@ -46,7 +46,9 @@ export default function GnrePage() {
         { key: 'uf', header: 'UF', cell: (r: Gnre) => <b>{r.uf}</b> },
         { key: 'revenueCode', header: 'Receita', cell: (r: Gnre) => <span>{r.revenueCode} <span className="text-muted-foreground">{REVENUE[r.revenueCode]}</span></span> },
         { key: 'invoice', header: 'NF-e', cell: (r: Gnre) => (r.invoice ? <Link className="text-primary hover:underline" href={`/fiscal/notas/${r.invoice.id}`}>{r.invoice.number} — {r.invoice.customerName}</Link> : '—') },
-        { key: 'line', header: 'Linha digitável', cell: (r: Gnre) => <span className="block max-w-[260px] truncate font-mono text-[11px]" title={r.reference || ''}>{r.line || r.reference || '—'}</span> },
+        { key: 'line', header: 'Linha digitável', cell: (r: Gnre) => (!r.line && r.status === 'PENDENTE' && !/Recibo|SIMULADO/i.test(r.reference || '')
+          ? <span className="block max-w-[260px] text-[11px] text-amber-700" title={r.reference || ''}>Sem código de barras — emita a guia no <a className="underline" href="https://www.gnre.pe.gov.br" target="_blank" rel="noreferrer">Portal GNRE</a> e registre o pagamento aqui</span>
+          : <span className="block max-w-[260px] truncate font-mono text-[11px]" title={r.reference || ''}>{r.line || r.reference || '—'}</span>) },
         { key: 'amount', header: 'Valor', align: 'right', cell: (r: Gnre) => money(r.amount) },
         { key: 'status', header: 'Situação', cell: (r: Gnre) => <span className="flex gap-1"><Badge tone={TONE[r.status] || 'gray'}>{r.status}</Badge>{/SIMULADO/i.test(r.reference || '') && <Badge tone="purple">Simulada</Badge>}</span> },
         { key: 'actions', header: '', align: 'right', cell: (r: Gnre) => (

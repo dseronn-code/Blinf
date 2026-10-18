@@ -5,7 +5,7 @@ import { Radio, Plug, KeyRound, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi, useAction, api } from '@/lib/api';
 import { useQueryClient } from '@tanstack/react-query';
-import { PageHeader, Chips, Filters, SimBanner, Field } from '@/components/common/page';
+import { PageHeader, Chips, Filters, SimBanner, Field, useDemoMode } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { Input, Switch } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
@@ -21,6 +21,7 @@ export default function Integrations() {
   const [connect, setConnect] = useState<any>(null);
   const [step, setStep] = useState(0);
   const [live, setLive] = useState(false);
+  const demo = useDemoMode();
   const act = useAction();
   const qc = useQueryClient();
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -30,14 +31,15 @@ export default function Integrations() {
   useEffect(() => {
     try { localStorage.setItem('gp_live_sim', live ? '1' : '0'); } catch {}
     if (timer.current) clearInterval(timer.current);
-    if (live) {
+    // Simulador de pedidos: só no modo demonstração (em produção a API recusa)
+    if (live && demo) {
       timer.current = setInterval(async () => {
         const r: any = await api('/api/integrations/tick', { method: 'POST', json: {} }).catch(() => null);
         if (r?.created?.length) { toast.success(`🛒 ${r.created.length} novo(s) pedido(s) importado(s) dos marketplaces`); qc.invalidateQueries(); }
       }, 20000);
     }
     return () => { if (timer.current) clearInterval(timer.current); };
-  }, [live, qc]);
+  }, [live, demo, qc]);
   const list = (data?.connectors || []).filter((c: any) => !cat || c.category === cat);
   const connected = (data?.connectors || []).filter((c: any) => c.channel?.status === 'CONECTADO');
   const realCount = connected.filter((c: any) => c.channel.real).length;
@@ -51,7 +53,7 @@ export default function Integrations() {
   return (
     <div>
       <PageHeader title="Central de integrações" description={`${data?.connectors.length ?? 0} conectores · ${connected.length} conectados. Pedidos importados automaticamente, estoque e preços sincronizados em tempo real.`}
-        actions={<Card className="flex items-center gap-3 px-3 py-2"><Radio className={live ? 'h-4 w-4 animate-pulse text-green-600' : 'h-4 w-4 text-muted-foreground'} /><div className="text-xs"><div className="font-semibold">Simulação em tempo real</div><div className="text-muted-foreground">novos pedidos a cada ~20s</div></div><Switch checked={live} onChange={setLive} /></Card>} />
+        actions={demo && <Card className="flex items-center gap-3 px-3 py-2"><Radio className={live ? 'h-4 w-4 animate-pulse text-green-600' : 'h-4 w-4 text-muted-foreground'} /><div className="text-xs"><div className="font-semibold">Simulação em tempo real</div><div className="text-muted-foreground">novos pedidos a cada ~20s</div></div><Switch checked={live} onChange={setLive} /></Card>} />
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-green-300 bg-green-50 px-3 py-2 text-xs text-green-900">
         <span><CheckCircle2 className="mr-1 inline h-4 w-4" /><b>Contas reais:</b> Mercado Livre, Shopee, Nuvemshop, Shopify e WooCommerce conectam com a sua conta em Contas e credenciais — os pedidos entram sozinhos e estoque/preço são enviados a cada alteração. {realCount ? `${realCount} canal(is) com conta real.` : ''}</span>
         <Button asChild size="sm" variant="outline"><Link href="/integracoes/contas"><KeyRound /> Contas e credenciais</Link></Button>
@@ -66,7 +68,7 @@ export default function Integrations() {
               <div className="flex-1"><div className="font-semibold">{c.name}</div><div className="text-[11px] text-muted-foreground">{CATS[c.category]}</div></div>
               {c.channel && <StatusBadge status={c.channel.status} />}
             </div>
-            {c.channel?.status === 'CONECTADO' && <div className="mb-2">{c.channel.real ? <Badge tone="green">Conta real conectada{c.account?.accountName ? ` · ${c.account.accountName}` : ''}</Badge> : <Badge tone="yellow">Simulado</Badge>}</div>}
+            {c.channel?.status === 'CONECTADO' && <div className="mb-2">{c.channel.real ? <Badge tone="green">Conta real conectada{c.account?.accountName ? ` · ${c.account.accountName}` : ''}</Badge> : <Badge tone="yellow">{demo ? 'Simulado' : 'Sem conta real'}</Badge>}</div>}
             {c.supportsReal && c.account?.status === 'ERRO' && <div className="mb-2 text-[11px] text-red-600">Conta real com erro: {c.account.lastError || 'reconecte'}</div>}
             <p className="mb-3 flex-1 text-xs text-muted-foreground">{c.description}</p>
             {c.channel?.status === 'CONECTADO' ? (
@@ -78,13 +80,14 @@ export default function Integrations() {
             ) : c.supportsReal ? (
               <div className="space-y-1">
                 <Button asChild size="sm" className="w-full"><Link href="/integracoes/contas"><KeyRound /> Conectar conta real</Link></Button>
-                <Button size="sm" variant="ghost" className="w-full" onClick={() => setConnect({ ...c, storeName: '' })}><Plug /> Simular conexão</Button>
+                {demo && <Button size="sm" variant="ghost" className="w-full" onClick={() => setConnect({ ...c, storeName: '' })}><Plug /> Simular conexão</Button>}
               </div>
-            ) : <Button size="sm" className="w-full" onClick={() => setConnect({ ...c, storeName: '' })}><Plug /> Conectar</Button>}
+            ) : demo ? <Button size="sm" className="w-full" onClick={() => setConnect({ ...c, storeName: '' })}><Plug /> Conectar</Button>
+              : <div className="space-y-1 text-center text-[11px] text-muted-foreground"><div>Integração direta ainda não disponível para este canal.</div><Button asChild size="sm" variant="outline" className="w-full"><Link href="/integracoes/contas"><KeyRound /> Ver contas disponíveis</Link></Button></div>}
           </Card>
         ))}
       </div>
-      <Dialog open={!!connect} onOpenChange={(o) => !o && setConnect(null)} title={`Conectar ${connect?.name}`} description="Fluxo de autorização OAuth simulado" size="sm" footer={<Button disabled={step > 0} onClick={doConnect}>{step ? 'Autorizando…' : 'Autorizar acesso'}</Button>}>
+      <Dialog open={demo && !!connect} onOpenChange={(o) => !o && setConnect(null)} title={`Conectar ${connect?.name}`} description="Fluxo de autorização OAuth simulado" size="sm" footer={<Button disabled={step > 0} onClick={doConnect}>{step ? 'Autorizando…' : 'Autorizar acesso'}</Button>}>
         {connect && <div className="space-y-3 text-sm">
           <p>O GestãoPro solicitará permissão para: ler pedidos, atualizar estoque e preços, publicar anúncios e consultar envios.</p>
           <Field label="Nome da loja / conta no canal"><Input value={connect.storeName} onChange={(e) => setConnect({ ...connect, storeName: e.target.value })} placeholder={`Minha loja no ${connect.name}`} /></Field>

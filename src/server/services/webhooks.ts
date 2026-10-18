@@ -1,11 +1,14 @@
 /**
  * Webhooks: entrega dos eventos de domínio para URLs cadastradas, via fila
- * (com novas tentativas e backoff). URLs com "simulado"/"example" — ou com
- * WEBHOOKS_SIMULATE_ONLY diferente de "false" — geram entregas simuladas (200).
+ * (com novas tentativas e backoff).
+ * Produção: entrega de verdade, a menos que WEBHOOKS_SIMULATE_ONLY="true" explicitamente.
+ * Modo demonstração: URLs com "simulado"/"example" — ou WEBHOOKS_SIMULATE_ONLY diferente
+ * de "false" — geram entregas simuladas (200).
  * Assinatura HMAC-SHA256 do corpo no header X-GestaoPro-Signature.
  */
 import crypto from 'crypto';
 import { prisma } from '@/lib/db';
+import { isDemoMode } from '@/lib/demo';
 import type { DomainEvent, EventPayload } from '../events';
 import { enqueue, registerJob } from './jobs';
 
@@ -14,6 +17,12 @@ export const WEBHOOK_EVENTS: DomainEvent[] = [
   'invoice.authorized', 'invoice.cancelled', 'stock.changed', 'product.price_changed', 'purchase.received',
   'receivable.paid', 'payable.paid', 'shipment.posted', 'shipment.delivered', 'contact.created',
 ];
+
+/** Entrega simulada? Em produção só com WEBHOOKS_SIMULATE_ONLY="true" explícito */
+export function webhookSimulated(url: string) {
+  if (!isDemoMode()) return process.env.WEBHOOKS_SIMULATE_ONLY === 'true';
+  return /simulad|example|localhost\.test/i.test(url) || process.env.WEBHOOKS_SIMULATE_ONLY !== 'false';
+}
 
 export async function dispatchWebhooks(event: DomainEvent, payload: EventPayload) {
   const hooks = await prisma.webhook.findMany({ where: { companyId: payload.companyId, active: true, events: { has: event } } });
@@ -30,7 +39,7 @@ export async function deliverWebhook(webhookId: string, body: { event: string; [
   const json = JSON.stringify(body);
   const signature = crypto.createHmac('sha256', h.secret).update(json).digest('hex');
   const started = Date.now();
-  const simulated = /simulad|example|localhost\.test/i.test(h.url) || process.env.WEBHOOKS_SIMULATE_ONLY !== 'false';
+  const simulated = webhookSimulated(h.url);
   let statusCode = 200;
   let response = '{"received":true} (entrega simulada)';
   let success = true;

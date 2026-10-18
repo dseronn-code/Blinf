@@ -8,7 +8,7 @@
  */
 import type { Company, Contact, Invoice, InvoiceItem } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { onlyDigits, randomDigits } from '@/lib/utils';
+import { onlyDigits } from '@/lib/utils';
 import { fail } from '../errors';
 import { httpRequest, IntegrationError } from '@/server/integrations/http';
 import { finishAuthorization, rejectLocal, reload } from './fiscal';
@@ -130,7 +130,7 @@ export async function cancelNfseNacional(company: Company, invoice: Invoice, rea
     fail(400, `Cancelamento rejeitado: ${nfseErrors(d, res.status)}`);
   }
   const evXml = d?.eventoXmlGZipB64 ? unzipB64(d.eventoXmlGZipB64) : '';
-  return { protocol: tag(evXml, 'nDFe') || tag(evXml, 'nSeqEvento') || randomDigits(15), code: '135', description: 'Evento de cancelamento da NFS-e registrado no ADN' };
+  return { protocol: tag(evXml, 'nDFe') || tag(evXml, 'nSeqEvento') || '', code: '135', description: 'Evento de cancelamento da NFS-e registrado no ADN' };
 }
 
 export { reload as reloadInvoice };

@@ -363,7 +363,11 @@ export async function stockLabelsPdf(items: { sku: string; name: string; locatio
   return doc.save();
 }
 
-/** Etiqueta de envio 10x15 cm */
+/**
+ * Etiqueta 10x15 cm. Frete próprio/retirada (provider PROPRIO): etiqueta de endereçamento real
+ * (remetente/destinatário/pedido, rastreio só se digitado pelo usuário). Demais: etiqueta simulada
+ * (só modo demonstração — em produção a etiqueta oficial vem do provedor).
+ */
 export async function shippingLabelPdf(list: { shipment: Shipment; order: SalesOrder & { customer: { name: string } }; company: Company }[]) {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -371,6 +375,7 @@ export async function shippingLabelPdf(list: { shipment: Shipment; order: SalesO
   for (const { shipment, order, company } of list) for (let vol = 1; vol <= Math.max(1, shipment.volumes || 1); vol++) {
     const page = doc.addPage([283.46, 425.2]);
     const c = { page, font, bold };
+    const manual = shipment.provider === 'PROPRIO';
     const to = (order.shipTo || {}) as Record<string, string>;
     page.drawRectangle({ x: 6, y: 6, width: 271, height: 413, borderColor: rgb(0, 0, 0), borderWidth: 1 });
     text(c, shipment.carrier.toUpperCase(), 14, 398, 14, true);
@@ -391,14 +396,17 @@ export async function shippingLabelPdf(list: { shipment: Shipment; order: SalesO
     text(c, `${fmtCep(to.zip)}  ${to.city || ''}/${to.uf || ''}`, 14, 212, 11, true);
     const cep = await barcode(doc, 'code128', (to.zip || '00000000').replace(/\D/g, '') || '00000000', { height: 10 });
     if (cep) page.drawImage(cep, { x: 14, y: 160, width: 140, height: 40 });
-    const dm = await barcode(doc, 'datamatrix', `${to.zip}|${shipment.trackingCode}|${order.number}`, { scale: 3, height: undefined });
-    if (dm) page.drawImage(dm, { x: 190, y: 150, width: 70, height: 70 });
+    if (!manual) {
+      const dm = await barcode(doc, 'datamatrix', `${to.zip}|${shipment.trackingCode}|${order.number}`, { scale: 3, height: undefined });
+      if (dm) page.drawImage(dm, { x: 190, y: 150, width: 70, height: 70 });
+    }
     page.drawLine({ start: { x: 6, y: 140 }, end: { x: 277, y: 140 }, thickness: 1 });
     text(c, 'REMETENTE', 14, 126, 8, true);
     text(c, company.tradeName || company.name, 14, 112, 9, true);
     text(c, `${company.street || ''}, ${company.number || ''} - ${company.district || ''}`, 14, 100, 8);
     text(c, `${fmtCep(company.zip)}  ${company.city || ''}/${company.uf}`, 14, 88, 8);
-    text(c, 'ETIQUETA SIMULADA - NÃO VÁLIDA PARA POSTAGEM', 30, 20, 8, true, rgb(0.8, 0.1, 0.1));
+    if (manual) text(c, 'ETIQUETA DE ENDEREÇAMENTO', 70, 20, 8, true);
+    else text(c, 'ETIQUETA SIMULADA - NÃO VÁLIDA PARA POSTAGEM', 30, 20, 8, true, rgb(0.8, 0.1, 0.1));
   }
   if (!list.length) doc.addPage();
   return doc.save();

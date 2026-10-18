@@ -17,6 +17,8 @@ import { prisma } from '@/lib/db';
 import { round2, onlyDigits, randomDigits } from '@/lib/utils';
 import { buildAccessKey, ICMS_INTERNAL, interstateIcmsRate, isValidCNPJ, isValidCPF, isValidAccessKey, UF_CODES, FCP_RATE, CBS_RATE, IBS_RATE } from '@/lib/br';
 import { fail } from '../errors';
+import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
+import { notify } from './notify';
 import { nextNumber } from '../sequence';
 import { emit } from '../events';
 import { signElement } from './cert';
@@ -33,6 +35,14 @@ import type { Company, Contact, Invoice, InvoiceItem, OperationNature } from '@p
 export type InvoiceModel = 'NFE' | 'NFCE' | 'NFSE';
 export type FiscalProvider = 'SIMULADO' | 'SEFAZ' | 'FOCUS_NFE';
 export const fiscalProviderOf = (c: Pick<Company, 'fiscalProvider'>): FiscalProvider => (['SEFAZ', 'FOCUS_NFE'].includes(c.fiscalProvider) ? (c.fiscalProvider as FiscalProvider) : 'SIMULADO');
+
+/** Onde configurar a emissão real (mensagem exibida quando a emissão é bloqueada em produção) */
+export const FISCAL_HOWTO = 'Em Notas fiscais → Certificado, instale o certificado A1 e escolha SEFAZ direta (ou conecte a Focus NFe em Integrações → Contas e credenciais).';
+/** Em produção, sem SEFAZ/Focus não existe emissão: a "SEFAZ simulada" só roda no modo demonstração */
+export const fiscalSimulationBlocked = (c: Pick<Company, 'fiscalProvider'>) => fiscalProviderOf(c) === 'SIMULADO' && !isDemoMode();
+export function requireRealFiscal(c: Pick<Company, 'fiscalProvider'>, feature = 'Emissão de nota fiscal') {
+  if (fiscalProviderOf(c) === 'SIMULADO') requireRealOrDemo(feature, FISCAL_HOWTO);
+}
 
 type TaxInputItem = { total: number; ipiRate: number; origin: number; isService: boolean; issRate?: number; mvaST?: number };
 export type TaxDest = { uf: string; contributor: boolean; finalConsumer: boolean };
@@ -138,6 +148,14 @@ export async function buildInvoice(db: Db, input: BuildInvoiceInput) {
   const company = await db.company.findUnique({ where: { id: input.companyId } });
   if (!company) fail(404, 'Empresa não encontrada');
   const c = company!;
+  // Produção sem provedor fiscal: não cria rascunho (nem consome numeração) para uma nota que não pode ser emitida
+  if (fiscalSimulationBlocked(c)) {
+    const order = input.salesOrderId ? await db.salesOrder.findUnique({ where: { id: input.salesOrderId }, select: { number: true, origin: true } }) : null;
+    if (order && ['PDV', 'INTEGRACAO'].includes(order.origin)) {
+      await notify(c.id, 'Venda sem nota fiscal', `Pedido nº ${order.number}: a ${input.model === 'NFCE' ? 'NFC-e' : input.model === 'NFSE' ? 'NFS-e' : 'NF-e'} não foi emitida porque não há emissor fiscal configurado. ${FISCAL_HOWTO}`, { level: 'warning', link: '/fiscal/certificado' }).catch(() => {});
+    }
+    requireRealFiscal(c);
+  }
   const nature = await natureFor(db, c.id, input.model, input.natureId, input.natureKind);
   const customer = input.customerId ? await db.contact.findUnique({ where: { id: input.customerId } }) : null;
   const destUf = customer?.uf || c.uf;
@@ -303,7 +321,10 @@ export async function transmitInvoice(companyId: string, orgId: string, invoiceI
   let result;
   if (provider === 'SEFAZ') result = await transmitSefaz(company, invoice, orgId, userName);
   else if (provider === 'FOCUS_NFE') result = await transmitFocus(company, invoice, orgId, userName);
-  else result = await transmitSimulated(company, invoice, orgId, userName);
+  else {
+    requireRealFiscal(company);
+    result = await transmitSimulated(company, invoice, orgId, userName);
+  }
   if (result?.status === 'AUTORIZADA') await afterAuthorized(companyId, orgId, invoiceId);
   return result;
 }
@@ -695,6 +716,13 @@ export async function cancelInvoice(companyId: string, orgId: string, invoiceId:
   let protocol: string;
   let code = '135';
   let detail = 'Evento registrado e vinculado a NF-e';
+  if (via === 'SIMULADO' && !isDemoMode()) {
+    // Nota gerada pela simulação (sem valor fiscal): só é descartada no sistema — não há protocolo da SEFAZ
+    await prisma.invoice.update({ where: { id: invoiceId }, data: { status: 'CANCELADA', cancelReason: reason, cancelProtocol: null, cancelledAt: new Date() } });
+    await prisma.invoiceEvent.create({ data: { invoiceId, type: 'CANCELAMENTO', description: `Nota sem valor fiscal (emitida em simulação) cancelada apenas no sistema, sem evento na SEFAZ. Justificativa: ${reason}` } });
+    await emit('invoice.cancelled', { companyId, orgId, invoiceId, salesOrderId: inv!.salesOrderId, userName });
+    return;
+  }
   if (via === 'SIMULADO') {
     const hours = (Date.now() - (inv!.authorizedAt?.getTime() || 0)) / 3600000;
     const limit = inv!.model === 'NFCE' ? 0.5 : inv!.model === 'NFSE' ? 24 * 30 : 24;
@@ -774,6 +802,7 @@ export async function correctionLetter(companyId: string, invoiceId: string, tex
     const url = r.procXml ? await storeXml(company.organizationId, `${inv!.accessKey}-110110-${seq}-procEventoNFe.xml`, r.procXml) : null;
     return prisma.invoiceEvent.create({ data: { invoiceId, type: 'CCE', code: r.cStat, protocol: r.nProt, description: `Carta de correção nº ${seq}${r.authorizer ? ` (${r.authorizer})` : ''}: ${correction}${url ? ` — XML do evento: ${url}` : ''}` } });
   }
+  requireRealOrDemo('Carta de correção (CC-e)', `A nota não foi autorizada pela SEFAZ/Focus NFe — a CC-e só pode ser registrada em notas reais. ${FISCAL_HOWTO}`);
   return prisma.invoiceEvent.create({ data: { invoiceId, type: 'CCE', code: '135', protocol: `1${Date.now()}`, description: `Carta de correção: ${correction}` } });
 }
 
@@ -790,15 +819,17 @@ export async function voidNumbers(companyId: string, input: { model: string; ser
   if (overlap) fail(400, 'Rejeição 256: faixa já inutilizada');
   const company = (await prisma.company.findUnique({ where: { id: companyId } }))!;
   const provider = fiscalProviderOf(company);
-  let protocol = `1${randomDigits(14)}`;
+  if (provider === 'SIMULADO') requireRealFiscal(company, 'Inutilização de numeração');
+  // Protocolo fictício apenas na simulação (modo demonstração); nos provedores reais vale o retornado
+  let protocol = provider === 'SIMULADO' ? `1${randomDigits(14)}` : '';
   if (provider === 'SEFAZ') {
     const r = await inutilizar(sefazCtx(company), model === 'NFCE' ? 65 : 55, { serie: series, nIni: fromNumber, nFin: toNumber, xJust: reason.trim() });
     if (!r.ok) fail(400, `Rejeição ${r.cStat}: ${r.xMotivo}`);
-    protocol = r.nProt || protocol;
+    protocol = r.nProt || '';
   } else if (provider === 'FOCUS_NFE') {
     const r = await focusInutilizar(await focusAccount(companyId), model as 'NFE' | 'NFCE', { cnpj: onlyDigits(company.cnpj), serie: series, numero_inicial: fromNumber, numero_final: toNumber, justificativa: reason.trim() });
     if (!r.ok) fail(400, `Inutilização rejeitada: ${r.xMotivo}`);
-    protocol = r.protocol || protocol;
+    protocol = r.protocol || '';
   }
   return prisma.numberVoid.create({ data: { companyId, model, series, fromNumber, toNumber, reason, protocol } });
 }

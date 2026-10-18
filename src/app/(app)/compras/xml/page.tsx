@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { Download, Upload, FileCheck2 } from 'lucide-react';
 import { useApi, useAction } from '@/lib/api';
-import { PageHeader, DataTable, SimBanner } from '@/components/common/page';
+import { PageHeader, DataTable, SimBanner, useDemoMode } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Select } from '@/components/ui/input';
@@ -15,6 +15,7 @@ export default function XmlImport() {
   const { data, isLoading } = useApi<any>('/api/inbound');
   const { data: whs } = useApi<any>('/api/r/warehouses');
   const act = useAction();
+  const demo = useDemoMode();
   const [sel, setSel] = useState<any>(null);
   const [wh, setWh] = useState('');
   const upload = async (f: File | undefined) => {
@@ -26,7 +27,7 @@ export default function XmlImport() {
   return (
     <div>
       <PageHeader title="Importar XML de NF-e de entrada" description="Lê o XML do fornecedor (layout 4.00), cadastra fornecedor/produtos quando necessário e gera o recebimento com estoque e contas a pagar (duplicatas)"
-        actions={<><Button variant="outline" onClick={() => window.open('/api/inbound/sample', '_blank')}><Download /> Baixar XML de exemplo</Button><label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-medium text-white"><Upload className="h-4 w-4" /> Enviar XML<input type="file" accept=".xml" className="hidden" onChange={(e) => upload(e.target.files?.[0])} /></label></>} />
+        actions={<>{demo && <Button variant="outline" onClick={() => window.open('/api/inbound/sample', '_blank')}><Download /> Baixar XML de exemplo</Button>}<label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-medium text-white"><Upload className="h-4 w-4" /> Enviar XML<input type="file" accept=".xml" className="hidden" onChange={(e) => upload(e.target.files?.[0])} /></label></>} />
       <SimBanner>o XML de exemplo é gerado com chave de acesso válida (mod 11) a partir dos seus produtos e de um fornecedor cadastrado, simulando o download da SEFAZ/Manifesto do destinatário.</SimBanner>
       <DataTable loading={isLoading} rows={data?.rows} onRowClick={setSel} columns={[
         { key: 'number', header: 'NF-e', cell: (r: any) => <b>{r.number}/{r.series}</b> },

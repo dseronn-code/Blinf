@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, Plus, Sparkles } from 'lucide-react';
 import { useAction } from '@/lib/api';
-import { Field } from '@/components/common/page';
+import { Field, useDemoMode } from '@/components/common/page';
 import { EntityPicker } from '@/components/common/picker';
 import { Dialog } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -15,8 +15,11 @@ type Ch = { id: string; name: string; provider: string; real?: boolean };
  * "Criar anúncio" (como no Bling): produto do ERP → anúncio no canal.
  * Mercado Livre: tipo Clássico/Premium e categoria sugerida pelo título; Shopee: categoria obrigatória.
  */
-export function CreateListingButton({ channels, defaultChannelId, size }: { channels: Ch[]; defaultChannelId?: string; size?: 'sm' | 'default' }) {
+export function CreateListingButton({ channels: all, defaultChannelId, size }: { channels: Ch[]; defaultChannelId?: string; size?: 'sm' | 'default' }) {
   const [open, setOpen] = useState(false);
+  // Fora do modo demonstração só canais com conta real (anúncio simulado não existe no canal)
+  const demo = useDemoMode();
+  const channels = demo ? all : all.filter((c) => c.real);
   if (!channels.length) return null;
   return (
     <>

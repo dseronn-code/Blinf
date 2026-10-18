@@ -1,5 +1,6 @@
 import { route } from '@/server/http';
 import { fail, HttpError } from '@/server/errors';
+import { RealIntegrationRequired } from '@/lib/demo';
 import { importOrders, syncListings, publishListings, disconnectChannel, linkChannelListings, createChannelListing, suggestCategories } from '@/server/services/integrations';
 
 export const POST = route('integracoes', 'edit', async ({ ctx, params, body }) => {
@@ -7,7 +8,7 @@ export const POST = route('integracoes', 'edit', async ({ ctx, params, body }) =
     try {
       return await fn();
     } catch (e) {
-      if (e instanceof HttpError) throw e;
+      if (e instanceof HttpError || e instanceof RealIntegrationRequired) throw e;
       // Erros das APIs dos canais (token expirado, credencial inválida...) viram 400 com a mensagem
       return fail(400, (e as Error).message);
     }

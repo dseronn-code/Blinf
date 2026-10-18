@@ -298,7 +298,10 @@ function SplitDialog({ open, onOpenChange, order, onDone }: { open: boolean; onO
 /** Gerar etiqueta: cota o frete do pedido e envia a opção escolhida (com conta real conectada, a etiqueta é comprada na hora) */
 function ShipmentDialog({ order, onClose }: { order: any; onClose: () => void }) {
   const act = useAction();
-  const [q, setQ] = useState<{ real: boolean; options: any[]; errors: string[]; package?: any } | null>(null);
+  const [q, setQ] = useState<{ real: boolean; options: any[]; errors: string[]; package?: any; manual?: any[] } | null>(null);
+  // Frete próprio / retirada: valor e rastreio informados pelo usuário (nada inventado)
+  const [manualPrice, setManualPrice] = useState(String(order.freight ?? 0));
+  const [manualCode, setManualCode] = useState('');
   const [error, setError] = useState('');
   const [sel, setSel] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -307,34 +310,36 @@ function ShipmentDialog({ order, onClose }: { order: any; onClose: () => void })
       .then((r) => { setQ(r); const i = r.options.findIndex((x: any) => order.shippingService && x.service.startsWith(order.shippingService)); setSel(Math.max(i, 0)); })
       .catch((e) => setError((e as Error).message));
   }, [order.id, order.shippingService]);
-  const opt = q?.options[sel];
+  const all: any[] = q ? [...q.options, ...(q.manual || [])] : [];
+  const opt = all[sel];
   const submit = async () => {
     if (!opt) return;
     setBusy(true);
-    const r = await act('POST', `/api/sales-orders/${order.id}/shipment`, { option: { provider: opt.provider, carrier: opt.carrier, service: opt.service, serviceId: opt.serviceId } }, opt.simulated ? 'Etiqueta gerada' : 'Etiqueta comprada');
+    const r = await act('POST', `/api/sales-orders/${order.id}/shipment`, { option: { provider: opt.provider, carrier: opt.carrier, service: opt.service, serviceId: opt.serviceId, ...(opt.manual ? { price: opt.carrier === 'Retirada' ? 0 : Number(manualPrice) || 0, trackingCode: manualCode || null } : {}) } }, opt.manual ? 'Envio registrado' : opt.simulated ? 'Etiqueta gerada' : 'Etiqueta comprada');
     setBusy(false);
     if (r !== undefined) onClose();
   };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()} size="lg" title={`Etiqueta de envio — pedido nº ${order.number}`}
       description={q?.package ? `Pacote: ${num(q.package.weight, 3)} kg · ${q.package.length}×${q.package.width}×${q.package.height} cm` : 'Cotando o frete…'}
-      footer={<><Button variant="outline" onClick={onClose}>Voltar</Button><Button disabled={busy || !opt} onClick={submit}><Truck /> {opt && !opt.simulated ? `Comprar etiqueta (${money(opt.price)})` : 'Gerar etiqueta'}</Button></>}>
+      footer={<><Button variant="outline" onClick={onClose}>Voltar</Button><Button disabled={busy || !opt} onClick={submit}><Truck /> {opt?.manual ? 'Registrar envio' : opt && !opt.simulated ? `Comprar etiqueta (${money(opt.price)})` : 'Gerar etiqueta'}</Button></>}>
       {error && <p className="text-sm text-red-600">{error}</p>}
       {!q && !error && <p className="text-sm text-muted-foreground">Consultando transportadoras…</p>}
       {q && (
         <div className="space-y-2">
-          {!q.real && <p className="rounded-md border bg-muted/40 p-2 text-xs">Cotação simulada — conecte Melhor Envio ou Correios em Integrações → Contas para comprar etiquetas reais.</p>}
+          {!q.real && <p className="rounded-md border bg-muted/40 p-2 text-xs">{q.options.some((x: any) => x.simulated) ? 'Cotação simulada — ' : 'Sem cotação de transportadora — '}conecte Melhor Envio ou Correios em Integrações → Contas e credenciais para comprar etiquetas reais, ou use frete próprio / retirada.</p>}
           {q.errors?.length > 0 && <p className="text-xs text-amber-700">{q.errors.join(' · ')}</p>}
-          {q.options.map((x: any, i: number) => (
+          {all.map((x: any, i: number) => (
             <label key={i} className={cn('flex cursor-pointer items-center gap-3 rounded-md border p-2 text-sm', i === sel && 'border-primary bg-primary/5')}>
               <input type="radio" checked={i === sel} onChange={() => setSel(i)} />
-              <span className="flex-1"><b>{x.carrier}</b> {x.service} {x.simulated ? <Badge tone="gray">simulado</Badge> : <Badge tone="green">{x.provider === 'CORREIOS' ? 'Correios' : 'Melhor Envio'}</Badge>}</span>
-              <span className="text-muted-foreground">{x.deadlineDays} dia(s)</span>
-              <span className="w-24 text-right font-medium tabular-nums">{money(x.price)}</span>
+              <span className="flex-1"><b>{x.carrier}</b> {x.service} {x.manual ? <Badge tone="gray">manual</Badge> : x.simulated ? <Badge tone="gray">simulado</Badge> : <Badge tone="green">{x.provider === 'CORREIOS' ? 'Correios' : 'Melhor Envio'}</Badge>}</span>
+              {!x.manual && <span className="text-muted-foreground">{x.deadlineDays} dia(s)</span>}
+              <span className="w-24 text-right font-medium tabular-nums">{x.manual && x.carrier !== 'Retirada' ? money(Number(manualPrice) || 0) : money(x.price)}</span>
             </label>
           ))}
-          {!q.options.length && <p className="text-sm text-muted-foreground">Nenhuma opção de frete para este destino.</p>}
-          {opt && !opt.simulated && <p className="text-xs text-muted-foreground">A etiqueta será comprada agora na conta conectada e o valor debitado do saldo da transportadora/intermediador.</p>}
+          {!q.options.length && q.real && <p className="text-sm text-muted-foreground">Nenhuma opção de frete para este destino.</p>}
+          {opt?.manual && <div className="grid grid-cols-2 gap-2">{opt.carrier !== 'Retirada' && <Field label="Valor do frete (R$)"><Input type="number" step="0.01" value={manualPrice} onChange={(e) => setManualPrice(e.target.value)} /></Field>}<Field label="Código de rastreio (opcional)"><Input value={manualCode} onChange={(e) => setManualCode(e.target.value)} placeholder="Se a transportadora informar" /></Field><p className="col-span-2 text-xs text-muted-foreground">Imprime uma etiqueta de endereçamento (sem código gerado pelo sistema). Marque a postagem e a entrega em Logística → Envios.</p></div>}
+          {opt && !opt.simulated && !opt.manual && <p className="text-xs text-muted-foreground">A etiqueta será comprada agora na conta conectada e o valor debitado do saldo da transportadora/intermediador.</p>}
         </div>
       )}
     </Dialog>

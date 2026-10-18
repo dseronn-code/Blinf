@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Copy, KeyRound, Plus, Send, Trash2, Play } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi, useAction } from '@/lib/api';
-import { PageHeader, DataTable, Field } from '@/components/common/page';
+import { PageHeader, DataTable, Field, useDemoMode } from '@/components/common/page';
 import { ResourceCrud } from '@/components/common/crud';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -21,8 +21,9 @@ export default function ApiPage() {
   const { data: deliveries } = useApi<any>('/api/webhooks/deliveries');
   const { data: spec } = useApi<any>('/api/v1/openapi.json');
   const act = useAction();
+  const demo = useDemoMode();
   const [newKey, setNewKey] = useState<string | null>(null);
-  const [tryIt, setTryIt] = useState({ method: 'GET', path: '/products?q=camiseta', key: 'gp_live_demo_0123456789abcdef', body: '' });
+  const [tryIt, setTryIt] = useState({ method: 'GET', path: '/products?q=camiseta', key: '', body: '' });
   const [tryRes, setTryRes] = useState<string>('');
   const copy = (t: string) => { navigator.clipboard.writeText(t); toast.success('Copiado'); };
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
@@ -38,7 +39,7 @@ export default function ApiPage() {
         <TabsContent value="docs" className="space-y-3">
           <Card><CardContent className="space-y-2 text-sm">
             <p>{spec?.info.description}</p>
-            <div className="rounded bg-sidebar p-3 font-mono text-xs text-green-300">curl {origin}/api/v1/products \<br />&nbsp;&nbsp;-H &quot;Authorization: Bearer gp_live_demo_0123456789abcdef&quot;</div>
+            <div className="rounded bg-sidebar p-3 font-mono text-xs text-green-300">curl {origin}/api/v1/products \<br />&nbsp;&nbsp;-H &quot;Authorization: Bearer SUA_CHAVE_DE_API&quot;</div>
             <p className="text-xs text-muted-foreground">Especificação OpenAPI 3.0: <a className="text-primary" href="/api/v1/openapi.json" target="_blank">/api/v1/openapi.json</a> (importe no Postman/Insomnia).</p>
           </CardContent></Card>
           <div className="grid gap-3 lg:grid-cols-2">
@@ -64,7 +65,7 @@ export default function ApiPage() {
           <DataTable rows={keys?.rows} columns={[{ key: 'name', header: 'Nome' }, { key: 'prefix', header: 'Prefixo', cell: (r: any) => <span className="font-mono text-xs">{r.prefix}…</span> }, { key: 'createdAt', header: 'Criada', cell: (r: any) => fmtDateTime(r.createdAt) }, { key: 'lastUsedAt', header: 'Último uso', cell: (r: any) => fmtDateTime(r.lastUsedAt) }, { key: 'a', header: '', align: 'right', cell: (r: any) => <Button variant="ghost" size="icon" onClick={() => confirm('Revogar chave?') && act('DELETE', `/api/api-keys/${r.id}`, undefined, 'Chave revogada')}><Trash2 className="text-destructive" /></Button> }]} />
         </TabsContent>
         <TabsContent value="webhooks">
-          <ResourceCrud resource="webhooks" module="integracoes" title="Webhooks" description="Use uma URL contendo 'simulado' ou 'example' para entregas simuladas; URLs reais recebem POST de verdade (se WEBHOOKS_SIMULATE_ONLY=false)." defaults={{ active: true, events: ['order.created'] }}
+          <ResourceCrud resource="webhooks" module="integracoes" title="Webhooks" description={demo ? "Use uma URL contendo 'simulado' ou 'example' para entregas simuladas; URLs reais recebem POST de verdade (se WEBHOOKS_SIMULATE_ONLY=false)." : 'Cada evento é enviado por POST à URL cadastrada, assinado com o segredo (HMAC-SHA256), com novas tentativas em caso de falha.'} defaults={{ active: true, events: ['order.created'] }}
             columns={[{ key: 'url', header: 'URL' }, { key: 'events', header: 'Eventos', render: (r) => <span className="text-xs">{r.events.join(', ')}</span> }, { key: 'secret', header: 'Segredo', render: (r) => <button className="font-mono text-[10px]" onClick={(e) => { e.stopPropagation(); copy(r.secret); }}>{r.secret?.slice(0, 10)}… <Copy className="inline h-3 w-3" /></button> }, { key: 'active', header: 'Ativo', format: 'bool' }, { key: 'test', header: '', render: (r) => <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); act('POST', `/api/webhooks/${r.id}/test`, {}, 'Evento de teste enviado'); }}>Testar</Button> }]}
             fields={[{ key: 'url', label: 'URL de destino', required: true, span: 3 }, { key: 'events', label: 'Eventos', type: 'multicheck', span: 3, options: EVENTS.map((e) => ({ value: e, label: e })) }, { key: 'active', label: 'Ativo', type: 'checkbox' }]} />
         </TabsContent>

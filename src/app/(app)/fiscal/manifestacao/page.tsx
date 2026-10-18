@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { CloudDownload, MoreHorizontal, Eye, CheckCircle2, HelpCircle, Ban, FileCode, PackagePlus, ExternalLink, Loader2 } from 'lucide-react';
 import { useApi, useAction, openFile } from '@/lib/api';
-import { PageHeader, DataTable, StatCard, Filters, Chips, SimBanner } from '@/components/common/page';
+import { PageHeader, DataTable, StatCard, Filters, Chips, SimBanner, useDemoMode } from '@/components/common/page';
 import { PromptDialog } from '@/components/common/prompt';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +39,10 @@ const canDownload = (s: Status) => s === 'CIENCIA' || s === 'CONFIRMADA';
 export default function Manifestacao() {
   const act = useAction();
   const { data, isLoading } = useApi<Doc[]>('/api/fiscal/distribution');
+  const { data: company } = useApi<{ fiscalProvider?: string }>('/api/company');
+  const demo = useDemoMode();
+  // Em produção a consulta só existe pela SEFAZ (certificado A1) ou pela Focus NFe
+  const canConsult = demo || (!!company && ['SEFAZ', 'FOCUS_NFE'].includes(company.fiscalProvider || ''));
   const [status, setStatus] = useState<'' | Status>('');
   const [busy, setBusy] = useState(false);
   const [notDone, setNotDone] = useState<Doc | null>(null);
@@ -61,7 +65,8 @@ export default function Manifestacao() {
   return (
     <div>
       <PageHeader title="Manifestação do destinatário" description="NF-e emitidas por fornecedores contra o CNPJ da empresa (Distribuição DF-e)"
-        actions={<Button onClick={consult} disabled={busy}>{busy ? <Loader2 className="animate-spin" /> : <CloudDownload />} Consultar SEFAZ</Button>} />
+        actions={canConsult ? <Button onClick={consult} disabled={busy}>{busy ? <Loader2 className="animate-spin" /> : <CloudDownload />} Consultar SEFAZ</Button> : <Link href="/fiscal/certificado"><Button variant="outline">Configurar emissor fiscal</Button></Link>} />
+      {!canConsult && company && <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">A consulta das NF-e emitidas contra o seu CNPJ é feita na SEFAZ (Distribuição DF-e) com o certificado A1 ou pela Focus NFe. Configure em Notas fiscais → Certificado (SEFAZ direta) ou em Integrações → Contas e credenciais (Focus NFe).</div>}
       <SimBanner>a consulta à Distribuição DF-e do Ambiente Nacional é simulada: cada consulta gera NF-e fictícias de fornecedores emitidas contra o seu CNPJ. Os eventos de manifestação são registrados localmente, sem envio à SEFAZ.</SimBanner>
 
       <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">

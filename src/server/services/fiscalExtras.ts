@@ -12,7 +12,7 @@ import { fail } from '../errors';
 import { nextNumber } from '../sequence';
 import { emit } from '../events';
 import { moveStock } from './stock';
-import { buildInvoice, transmitInvoice, fiscalProviderOf } from './fiscal';
+import { buildInvoice, transmitInvoice, fiscalProviderOf, requireRealFiscal } from './fiscal';
 import { sefazCtx, distribuicaoDFe, enviarEvento, detManifestacao, readDistributedNfe } from './sefaz/nfe';
 import { getAccount } from '@/server/integrations/accounts';
 import { focusReceived, focusManifest, focusDownload } from '@/server/integrations/providers/focusnfe';
@@ -27,6 +27,8 @@ export async function transferBetweenCompanies(actor: Actor, input: { toCompanyI
   const from = await prisma.company.findUnique({ where: { id: actor.companyId } });
   const to = await prisma.company.findFirst({ where: { id: input.toCompanyId, organizationId: actor.orgId } });
   if (!to) fail(400, 'Empresa de destino inválida');
+  // NF-e de transferência sem emissor real (produção): bloqueia antes de movimentar qualquer coisa
+  if (input.emitInvoice !== false) requireRealFiscal(from!, 'NF-e de transferência');
   const fromWh = input.fromWarehouseId ? await prisma.warehouse.findFirst({ where: { id: input.fromWarehouseId, companyId: actor.companyId } }) : await prisma.warehouse.findFirst({ where: { companyId: actor.companyId, isDefault: true } });
   const toWh = input.toWarehouseId ? await prisma.warehouse.findFirst({ where: { id: input.toWarehouseId, companyId: to!.id } }) : await prisma.warehouse.findFirst({ where: { companyId: to!.id, isDefault: true } });
   if (!fromWh || !toWh) fail(400, 'Depósitos de origem/destino inválidos');
@@ -134,6 +136,8 @@ export async function fetchDistribution(actor: Actor, count = 3) {
     await saveDfeState(st.id, { ...st.settings, focusVersion: r.maxVersion });
     return created;
   }
+  // Simulação (fornecedores fictícios) só no modo demonstração
+  requireRealFiscal(company, 'Consulta de NF-e recebidas (Distribuição DF-e)');
   const created = [];
   for (let i = 0; i < count; i++) {
     const xml = await sampleSupplierXml(actor);
@@ -167,6 +171,8 @@ export async function manifest(actor: Actor, id: string, status: string, justifi
     if (!acc) fail(400, 'Conecte a conta Focus NFe em Integrações → Contas e credenciais');
     const r = await focusManifest(acc!, d!.accessKey, status, justification);
     if (!r.ok) fail(400, `Manifestação rejeitada: ${r.xMotivo}`);
+  } else {
+    requireRealFiscal(company, 'Manifestação do destinatário');
   }
   return prisma.nfeDistribution.update({ where: { id }, data: { status } });
 }

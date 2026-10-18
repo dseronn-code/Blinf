@@ -14,7 +14,8 @@ import { nextNumber } from '../sequence';
 import { getAccount } from '@/server/integrations/accounts';
 import { focusEmit, focusGet, focusCancel, focusMdfeClose, focusMdfePayload, focusDownload, type FocusResult } from '@/server/integrations/providers/focusnfe';
 import type { Actor } from './sales';
-import { fiscalProviderOf } from './fiscal';
+import { fiscalProviderOf, requireRealFiscal } from './fiscal';
+import { isDemoMode } from '@/lib/demo';
 import { sefazCtx, type SefazCtx } from './sefaz/nfe';
 import { soapCall } from './sefaz/soap';
 import { mdfeUrl } from './sefaz/urls';
@@ -250,6 +251,7 @@ export async function transmitMdfe(actor: Actor, id: string) {
   const key = m.accessKey && m.status === 'REJEITADO' && m.accessKey.slice(2, 6) === mdfeKey(company, m, now).slice(2, 6) ? m.accessKey : mdfeKey(company, m, now);
   const built = buildMdfeXml(m, company, { tpAmb, key, dhEmi: now });
   if (provider === 'SIMULADO') {
+    requireRealFiscal(company, 'Emissão de MDF-e');
     if (!company.ie) return pushEvent(m, { type: 'REJEICAO', code: '209', description: '209 - Rejeição: IE do emitente inválida' }, { status: 'REJEITADO', rejection: 'IE do emitente inválida', accessKey: key });
     const protocol = `9${UF_CODES[company.uf] || '35'}${String(now.getFullYear()).slice(2)}${randomDigits(10)}`;
     const prot = `<protMDFe versao="3.00"><infProt><tpAmb>${tpAmb}</tpAmb><verAplic>SEFAZ-SIMULADA</verAplic><chMDFe>${key}</chMDFe><dhRecbto>${dhUF(now, company.uf)}</dhRecbto><nProt>${protocol}</nProt><cStat>100</cStat><xMotivo>Autorizado o uso do MDF-e</xMotivo></infProt></protMDFe>`;
@@ -341,6 +343,15 @@ async function sendMdfeEvent(company: Company, m: Mdfe, tpEvento: '110111' | '11
   return parseRetEventoMdfe(body);
 }
 
+/**
+ * Evento de MDF-e emitido pela simulação: protocolo fictício só no modo demonstração.
+ * Em produção, um MDF-e simulado (sem valor fiscal) é encerrado/cancelado apenas no sistema, sem protocolo.
+ */
+function simulatedEvent(how: string) {
+  if (how === 'SIMULADO' && !isDemoMode()) return { ok: true, cStat: '', xMotivo: 'MDF-e sem valor fiscal (emitido em simulação) — registrado apenas no sistema, sem evento na SEFAZ', nProt: null as string | null };
+  return { ok: true, cStat: '135', xMotivo: 'Evento registrado e vinculado ao MDF-e', nProt: `9${randomDigits(14)}` as string | null };
+}
+
 /** Encerramento (110112) — no destino, ao fim da viagem */
 export async function closeMdfe(actor: Actor, id: string, input: { date?: string } = {}) {
   const m = await getMdfe(actor.companyId, id);
@@ -351,7 +362,7 @@ export async function closeMdfe(actor: Actor, id: string, input: { date?: string
   // Encerra no último município de descarregamento (fim da viagem)
   const end = mdfeDados(m).unloads.at(-1)!;
   const how = m.xml?.includes('SEFAZ-SIMULADA') ? 'SIMULADO' : fiscalProviderOf(company);
-  let r = { ok: true, cStat: '135', xMotivo: 'Evento registrado e vinculado ao MDF-e', nProt: `9${randomDigits(14)}` as string | null };
+  let r = simulatedEvent(how);
   if (how === 'FOCUS_NFE') {
     const f = await focusMdfeClose(await focusAcc(company.id), `mdfe_${m.id}`, { data: dtEnc, uf: m.ufEnd, municipio: end.city, codigoMunicipio: end.code });
     r = { ok: f.ok, cStat: f.cStat, xMotivo: f.xMotivo, nProt: f.protocol };
@@ -362,7 +373,7 @@ export async function closeMdfe(actor: Actor, id: string, input: { date?: string
     await pushEvent(m, { type: 'REJEICAO', code: r.cStat, description: `Encerramento: ${r.cStat} - ${r.xMotivo}` });
     fail(400, `Encerramento rejeitado: ${r.cStat} ${r.xMotivo}`);
   }
-  return pushEvent(m, { type: 'ENCERRAMENTO', code: r.cStat, protocol: r.nProt, description: `${r.cStat} - ${r.xMotivo} (encerrado em ${end.city}/${m.ufEnd})` }, { status: 'ENCERRADO', closedAt: date });
+  return pushEvent(m, { type: 'ENCERRAMENTO', code: r.cStat, protocol: r.nProt, description: `${r.cStat ? `${r.cStat} - ` : ''}${r.xMotivo} (encerrado em ${end.city}/${m.ufEnd})` }, { status: 'ENCERRADO', closedAt: date });
 }
 
 /** Cancelamento (110111) — antes do início da viagem; rascunhos são apenas descartados */
@@ -373,7 +384,7 @@ export async function cancelMdfe(actor: Actor, id: string, reason: string) {
   if (!reason || reason.trim().length < 15) fail(400, 'A justificativa deve ter no mínimo 15 caracteres');
   const company = (await prisma.company.findUnique({ where: { id: actor.companyId } }))!;
   const how = m.xml?.includes('SEFAZ-SIMULADA') ? 'SIMULADO' : fiscalProviderOf(company);
-  let r = { ok: true, cStat: '135', xMotivo: 'Evento registrado e vinculado ao MDF-e', nProt: `9${randomDigits(14)}` as string | null };
+  let r = simulatedEvent(how);
   if (how === 'SIMULADO' && Date.now() - (m.issueDate?.getTime() || 0) > 24 * 3600000) fail(400, 'Rejeição 218: prazo de cancelamento (24 h) excedido — encerre o MDF-e');
   if (how === 'FOCUS_NFE') {
     const f = await focusCancel(await focusAcc(company.id), 'MDFE', `mdfe_${m.id}`, reason.trim());
@@ -385,7 +396,7 @@ export async function cancelMdfe(actor: Actor, id: string, reason: string) {
     await pushEvent(m, { type: 'REJEICAO', code: r.cStat, description: `Cancelamento: ${r.cStat} - ${r.xMotivo}` });
     fail(400, `Cancelamento rejeitado: ${r.cStat} ${r.xMotivo}`);
   }
-  return pushEvent(m, { type: 'CANCELAMENTO', code: r.cStat, protocol: r.nProt, description: `${r.cStat} - ${r.xMotivo}. Justificativa: ${reason}` }, { status: 'CANCELADO' });
+  return pushEvent(m, { type: 'CANCELAMENTO', code: r.cStat, protocol: r.nProt, description: `${r.cStat ? `${r.cStat} - ` : ''}${r.xMotivo}. Justificativa: ${reason}` }, { status: 'CANCELADO' });
 }
 
 export async function getMdfeDetail(companyId: string, id: string) {

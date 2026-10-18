@@ -12,7 +12,7 @@ import { fail } from '../errors';
 import { nextNumber } from '../sequence';
 import { emit } from '../events';
 import { moveStock } from './stock';
-import { buildInvoice, transmitInvoice } from './fiscal';
+import { buildInvoice, transmitInvoice, requireRealFiscal } from './fiscal';
 import { createEntries } from './finance';
 import { createOrder, type Actor } from './sales';
 
@@ -53,13 +53,18 @@ export async function createReturn(actor: Actor, input: ReturnInput) {
   const total = round2(lines.reduce((a, l) => a + l.quantity * l.unitPrice, 0));
   const kind = input.kind || 'DEVOLUCAO';
   const refundMethod = kind === 'TROCA' ? 'NENHUM' : input.refundMethod || 'ESTORNO';
+  // NF-e de devolução sem emissor real (produção): bloqueia antes de registrar a devolução
+  const original = await prisma.invoice.findFirst({ where: { salesOrderId: o.id, status: 'AUTORIZADA', model: { in: ['NFE', 'NFCE'] } } });
+  const productLines = lines.filter((l) => l.productId);
+  if (input.emitInvoice !== false && original?.accessKey && productLines.length) {
+    const company = await prisma.company.findUnique({ where: { id: actor.companyId }, select: { fiscalProvider: true } });
+    requireRealFiscal(company!, 'NF-e de devolução');
+  }
   const number = await nextNumber(prisma, actor.companyId, 'DEVOLUCAO', 1);
   const ret = await prisma.salesReturn.create({ data: { companyId: actor.companyId, number, salesOrderId: o.id, kind, reason: input.reason, items: lines, total, refundMethod } });
 
   // 1) NF-e de devolução referenciando a nota original
   let invoiceId: string | null = null;
-  const original = await prisma.invoice.findFirst({ where: { salesOrderId: o.id, status: 'AUTORIZADA', model: { in: ['NFE', 'NFCE'] } } });
-  const productLines = lines.filter((l) => l.productId);
   if (input.emitInvoice !== false && original?.accessKey && productLines.length) {
     const inv = await buildInvoice(prisma, {
       companyId: actor.companyId, model: 'NFE', natureKind: 'DEVOLUCAO', customerId: o.customerId, refAccessKey: original.accessKey, returnId: ret.id,

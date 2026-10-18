@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db';
 import { route } from '@/server/http';
-import { CONNECTORS, connectChannel } from '@/server/services/integrations';
+import { visibleConnectors, connectChannel } from '@/server/services/integrations';
 import { syncAccountChannels, MARKETPLACE_PROVIDERS } from '@/server/services/marketplace';
 
 export const GET = route('integracoes', 'view', async ({ ctx }) => {
@@ -12,7 +12,7 @@ export const GET = route('integracoes', 'view', async ({ ctx }) => {
   ]);
   const orders = await prisma.salesOrder.groupBy({ by: ['channelId'], where: { companyId: ctx.companyId, channelId: { not: null }, status: { not: 'CANCELADO' } }, _count: true, _sum: { total: true } });
   return {
-    connectors: CONNECTORS.map((c) => {
+    connectors: visibleConnectors().map((c) => {
       const ch = channels.find((x) => x.provider === c.provider);
       const o = ch ? orders.find((x) => x.channelId === ch.id) : null;
       const acc = accounts.find((a) => a.provider === c.provider) || null;

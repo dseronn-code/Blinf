@@ -3,11 +3,13 @@
  * sincronização de estoque/preço e importação de pedidos.
  * Canal ligado a uma conta real (Integrações → Contas: Mercado Livre, Shopee,
  * Nuvemshop, Shopify, WooCommerce) → chamadas às APIs oficiais (services/marketplace).
- * Sem conta real → SIMULAÇÃO (OAuth fictício e pedidos com dados realistas).
+ * Sem conta real → SIMULAÇÃO (OAuth fictício e pedidos com dados realistas) — só no modo
+ * demonstração; em produção as operações recusam e orientam a conectar a conta real.
  */
 import { prisma } from '@/lib/db';
 import { pick, randomInt, round2, randomDigits } from '@/lib/utils';
 import { generateCPF } from '@/lib/br';
+import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
 import { getAvailability } from './stock';
 import { resolvePrice, createOrder, type Actor } from './sales';
 import { getAccount } from '@/server/integrations/accounts';
@@ -52,6 +54,16 @@ export const CONNECTORS: ConnectorDef[] = [
 
 export const connector = (provider: string) => CONNECTORS.find((c) => c.provider === provider);
 
+/** Conectores que só existem na simulação (sem integração real): somem fora do modo demonstração */
+export const DEMO_ONLY_CONNECTORS = ['GESTAO_ENVIOS'];
+export const visibleConnectors = () => (isDemoMode() ? CONNECTORS : CONNECTORS.filter((c) => !DEMO_ONLY_CONNECTORS.includes(c.provider)));
+
+export const REAL_ACCOUNT_HOWTO = 'conecte a conta real em Integrações → Contas e credenciais';
+/** Operação simulada de canal (sem conta real): permitida só no modo demonstração */
+export function requireSimulatedChannel(name: string, what: string) {
+  requireRealOrDemo(`${what} (${name})`, REAL_ACCOUNT_HOWTO);
+}
+
 /** Conta real do canal sem interromper o fluxo (falha de token vira log de erro) */
 async function realAccountOf(ch: Parameters<typeof linkedAccount>[0]) {
   let acc = null;
@@ -78,6 +90,8 @@ export async function connectChannel(actor: Actor, provider: string, storeName?:
     const acc = await getAccount(actor.companyId, provider);
     if (acc) return (await ensureChannelForAccount(acc, { force: true }))!;
   }
+  // Sem conta real: o OAuth abaixo é fictício — só no modo demonstração
+  requireSimulatedChannel(def.name, 'Conexão do canal');
   const existing = await prisma.salesChannel.findFirst({ where: { companyId: actor.companyId, provider } });
   const data = {
     status: 'CONECTADO',
@@ -104,6 +118,7 @@ export async function publishListings(actor: Actor, channelId: string, productId
   // Canal real: os anúncios são criados no painel do canal e vinculados aqui pelo SKU
   const acc = await realAccountOf(ch);
   if (acc) return (await realLinkListings(actor, ch, acc)).linked;
+  requireSimulatedChannel(ch.name, 'Publicação de anúncios');
   const products = await prisma.product.findMany({
     where: { organizationId: actor.orgId, active: true, kind: { in: ['SIMPLES', 'VARIACAO', 'KIT', 'FABRICADO'] }, ...(productIds ? { id: { in: productIds } } : { listings: { none: { channelId } } }) },
     take: 200,
@@ -135,6 +150,7 @@ export async function createChannelListing(actor: Actor, channelId: string, inpu
   if (!input.productId) throw new Error('Escolha o produto');
   const acc = await realAccountOf(ch);
   if (acc) return createRealListing(actor, ch, acc, input);
+  requireSimulatedChannel(ch.name, 'Criação de anúncio');
   const p = await prisma.product.findFirst({ where: { id: input.productId, organizationId: actor.orgId }, include: { variations: { where: { active: true }, select: { id: true } } } });
   if (!p) throw new Error('Produto não encontrado');
   const ids = p.kind === 'VARIACAO_PAI' ? p.variations.map((v) => v.id) : [p.id];
@@ -166,6 +182,8 @@ export async function updateListing(actor: Actor, listingId: string, body: { sta
   const price = body.price != null && body.price !== '' ? Number(body.price) : undefined;
   if (price != null && !(price > 0)) throw new Error('Preço inválido');
   if (acc && getAdapter(ch.provider)) return editRealListing(ch, acc, l.id, { status: body.status, title: body.title, price });
+  // Anúncio sem conta real (simulado): alterar só localmente fingiria uma atualização no canal
+  requireSimulatedChannel(ch.name, 'Atualização de anúncio');
   const data: Record<string, unknown> = { lastSyncAt: new Date() };
   if (body.status) data.status = body.status;
   if (body.title) data.title = body.title;
@@ -202,6 +220,8 @@ export async function syncListings(actor: Actor, opts: { productIds?: string[]; 
     } catch {
       continue;
     }
+    // Canal sem conta real: fora do modo demonstração não há o que sincronizar (nada é enviado)
+    if (!acc && !isDemoMode()) continue;
     const changes: string[] = [];
     const errors: string[] = [];
     for (const l of listings) {
@@ -255,6 +275,7 @@ const CITIES = [
 
 /** Gera um comprador fictício como contato */
 export async function fakeBuyer(orgId: string) {
+  requireRealOrDemo('Comprador de exemplo', REAL_ACCOUNT_HOWTO);
   const name = `${pick(FIRST)} ${pick(LAST)} ${pick(LAST)}`;
   const addr = pick(CITIES);
   return prisma.contact.create({
@@ -283,6 +304,8 @@ export async function importOrders(actor: Actor, channelId: string, count = 3) {
   // Canal real: busca na API os pedidos novos/alterados (a quantidade é ignorada)
   const acc = await realAccountOf(ch);
   if (acc) return (await realImportOrders(actor, ch, acc)).created;
+  // Sem conta real os pedidos seriam inventados (comprador fictício): só no modo demonstração
+  requireSimulatedChannel(ch.name, 'Importação de pedidos');
   const def = connector(ch.provider);
   const listings = await prisma.listing.findMany({ where: { channelId, status: 'ATIVO', stock: { gt: 0 } }, include: { product: true } });
   if (!listings.length) {
@@ -322,6 +345,7 @@ export async function importOrders(actor: Actor, channelId: string, count = 3) {
 
 /** "Tick" do simulador em tempo real: chance de novos pedidos em canais com importação automática */
 export async function simulationTick(actor: Actor) {
+  requireRealOrDemo('Simulação de pedidos em tempo real', 'recurso só do modo demonstração — os pedidos reais chegam pela sincronização periódica dos canais conectados (Integrações → Contas e credenciais)');
   const channels = await prisma.salesChannel.findMany({ where: { companyId: actor.companyId, status: 'CONECTADO', autoImport: true, category: { in: ['MARKETPLACE', 'ECOMMERCE', 'DELIVERY', 'SOCIAL'] } } });
   const created = [];
   for (const ch of channels) {

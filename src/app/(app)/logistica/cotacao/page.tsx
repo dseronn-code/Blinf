@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { Calculator } from 'lucide-react';
 import { useAction } from '@/lib/api';
-import { PageHeader, Field, DataTable, SimBanner } from '@/components/common/page';
+import { PageHeader, Field, DataTable, SimBanner, useDemoMode } from '@/components/common/page';
 import { EntityPicker } from '@/components/common/picker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,10 +15,12 @@ export default function FreightQuote() {
   const [orderId, setOrderId] = useState<string | null>(null);
   const [res, setRes] = useState<any>(null);
   const act = useAction();
+  const demo = useDemoMode();
   const quote = async () => setRes(await act('POST', '/api/logistics/quote', orderId ? { orderId } : f, false));
   return (
     <div>
-      <PageHeader title="Cotação de frete" description="Compare Correios (PAC/SEDEX), transportadoras do Melhor Envio e GestãoPro Envios (tarifas com desconto)" />
+      <PageHeader title="Cotação de frete" description={demo ? "Compare Correios (PAC/SEDEX), transportadoras do Melhor Envio e GestãoPro Envios (tarifas com desconto)" : "Compare Correios (contrato) e as transportadoras do Melhor Envio conectados à sua conta"} />
+      {!demo && res && !res.real && <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">Nenhuma cotação real disponível: conecte o Melhor Envio ou os Correios em Integrações → Contas e credenciais. Sem provedor, use frete próprio/transportadora própria ou retirada, informando o valor no pedido.</div>}
       {!res?.real && <SimBanner>sem conta do Melhor Envio ou dos Correios conectada (Integrações → Contas), os preços são calculados por fórmula própria considerando peso real × cúbico (L×A×C/6000), distância por região do CEP e seguro (0,5%).</SimBanner>}
       {res?.errors?.length > 0 && <div className="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-900">{res.errors.map((e: string, i: number) => <div key={i}>{e}</div>)}</div>}
       <Card className="mb-3"><CardContent className="grid grid-cols-2 gap-3 md:grid-cols-7">

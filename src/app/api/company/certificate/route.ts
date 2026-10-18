@@ -3,7 +3,8 @@ import { route } from '@/server/http';
 import { fail } from '@/server/errors';
 import { onlyDigits } from '@/lib/utils';
 import { readCertificate, generateDemoCertificate } from '@/server/services/cert';
-import { updateFiscalSettings } from '@/server/services/fiscal';
+import { updateFiscalSettings, fiscalProviderOf } from '@/server/services/fiscal';
+import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
 
 /**
  * Instalação do certificado digital A1 (.pfx/.p12).
@@ -17,6 +18,8 @@ export const POST = route('fiscal', 'edit', async ({ ctx, req }) => {
   let pfx: Buffer;
   let password = String(form.get('password') || '');
   if (form.get('demo') === '1') {
+    // Certificado autoassinado não é aceito por nenhuma SEFAZ: só no modo demonstração
+    requireRealOrDemo('Certificado de demonstração', 'Envie o seu certificado digital A1 (.pfx ou .p12) emitido por uma autoridade certificadora ICP-Brasil.');
     password = 'demo1234';
     pfx = generateDemoCertificate(company!.name, onlyDigits(company!.cnpj), password);
   } else {
@@ -52,6 +55,8 @@ export const PUT = route('fiscal', 'edit', async ({ ctx, body }) => {
   // Modo de emissão (SIMULADO | SEFAZ | FOCUS_NFE), ambiente e CSC da NFC-e
   if (body?.contingency === undefined) return updateFiscalSettings(ctx.companyId, body || {});
   const c = await prisma.company.findUnique({ where: { id: ctx.companyId } });
+  // Contingência offline da NFC-e só existe na emissão direta pela SEFAZ (com certificado A1)
+  if (body?.contingency && !isDemoMode() && (!c || fiscalProviderOf(c) !== 'SEFAZ' || !c.certPfx)) fail(400, 'A contingência offline da NFC-e só se aplica à emissão SEFAZ direta com certificado A1 instalado (Notas fiscais → Certificado).');
   const mode = body?.contingency ? 'CONTINGENCIA' : c?.certPfx ? 'ASSINADO' : 'SIMULADO';
   return prisma.company.update({ where: { id: ctx.companyId }, data: { sefazMode: mode }, select: { sefazMode: true } });
 });

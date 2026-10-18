@@ -93,7 +93,7 @@ export default function InvoicePage() {
               <p className="mt-1 text-[10px] text-muted-foreground">Destacados apenas para informação; não compõem o total da nota em 2026.</p>
             </div>
           </CardContent></Card>
-          <Card><CardHeader><CardTitle>Eventos (SEFAZ simulada)</CardTitle></CardHeader><div className="divide-y">
+          <Card><CardHeader><CardTitle>Eventos</CardTitle></CardHeader><div className="divide-y">
             {inv.events.map((e: any) => <div key={e.id} className="px-4 py-2 text-xs"><div className="flex justify-between"><Badge tone={e.type === 'REJEICAO' ? 'red' : e.type === 'AUTORIZACAO' ? 'green' : e.type === 'CANCELAMENTO' ? 'gray' : 'blue'}>{e.type}</Badge><span className="text-muted-foreground">{fmtDateTime(e.createdAt)}</span></div><div className="mt-1">{e.description}</div>{e.protocol && <div className="text-muted-foreground">Protocolo {e.protocol}</div>}</div>)}
           </div></Card>
         </div>

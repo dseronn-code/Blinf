@@ -13,6 +13,7 @@ import { emit } from '../events';
 import { moveStock } from './stock';
 import { createEntries } from './finance';
 import type { Actor } from './sales';
+import { requireRealOrDemo } from '@/lib/demo';
 
 export type PurchaseInput = {
   supplierId: string;
@@ -269,6 +270,8 @@ export async function launchInbound(actor: Actor, id: string, opts: { warehouseI
 
 /** Gera um XML de NF-e de fornecedor (para testar a importação) */
 export async function sampleSupplierXml(actor: Actor) {
+  // XML fictício (fornecedor/chave/protocolo inventados): só no modo demonstração
+  requireRealOrDemo('XML de exemplo de fornecedor', 'Importe o XML real recebido do fornecedor (Compras → Importar XML) ou consulte as NF-e recebidas pela SEFAZ/Focus NFe em Notas fiscais → Manifestação.');
   const company = (await prisma.company.findUnique({ where: { id: actor.companyId } }))!;
   const suppliers = await prisma.contact.findMany({ where: { organizationId: actor.orgId, types: { has: 'FORNECEDOR' }, personType: 'PJ' } });
   const supplier = suppliers.length ? suppliers[Math.floor(Math.random() * suppliers.length)] : null;
