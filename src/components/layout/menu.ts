@@ -121,6 +121,7 @@ export const MENU: MenuGroup[] = [
       { label: 'Modelos de e-mail', href: '/configuracoes/modelos-email' },
       { label: 'Segurança (2FA)', href: '/configuracoes/seguranca' },
       { label: 'Sistema e auditoria', href: '/configuracoes/sistema' },
+      { label: 'Dados e backup', href: '/configuracoes/dados' },
     ],
   },
 ];

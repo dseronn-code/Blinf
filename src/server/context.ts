@@ -20,6 +20,8 @@ export type Ctx = {
   stockMode: string;
   /** true quando o usuário pediu visão consolidada (todas as empresas) */
   consolidated: boolean;
+  /** entrou com senha padrão/fraca fora do modo demonstração: precisa trocar antes de continuar */
+  mustChangePassword: boolean;
 };
 
 /**
@@ -54,6 +56,7 @@ export async function getCtx(): Promise<Ctx> {
     permissions: (user.role.permissions || {}) as Permissions,
     stockMode: user.organization.stockMode,
     consolidated: jar.get('gp_consolidated')?.value === '1',
+    mustChangePassword: !!(session?.user as { mustChangePassword?: boolean } | undefined)?.mustChangePassword,
   };
 }
 

@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Search, Loader2, Inbox } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useApi } from '@/lib/api';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -113,8 +114,17 @@ export function Chips<T extends string>({ value, onChange, options }: { value: T
   );
 }
 
+/** Aviso de recurso simulado — só aparece no modo demonstração */
 export function SimBanner({ children }: { children: React.ReactNode }) {
+  const demo = useDemoMode();
+  if (!demo) return null;
   return <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">🧪 <b>Simulação:</b> {children}</div>;
+}
+
+/** true no modo demonstração (vem de /api/me); em produção, recursos simulados ficam escondidos */
+export function useDemoMode() {
+  const { data } = useApi<{ demo?: boolean }>('/api/me');
+  return !!data?.demo;
 }
 
 export function Field({ label, children, className, hint }: { label: React.ReactNode; children: React.ReactNode; className?: string; hint?: React.ReactNode }) {

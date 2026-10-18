@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { prisma } from './db';
 import { verifyTotp } from './totp';
 import { rateLimit } from './rateLimit';
+import { isDemoMode, WEAK_PASSWORDS } from './demo';
 
 /**
  * Autenticação por e-mail/senha (NextAuth + JWT), com segundo fator (TOTP)
@@ -41,17 +42,25 @@ export const authOptions: NextAuthOptions = {
           if (!verifyTotp(user.twoFactorSecret, credentials.otp)) throw new Error('Código de verificação inválido');
         }
         await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-        return { id: user.id, name: user.name, email: user.email };
+        // Fora do modo demonstração, senha padrão/fraca obriga a troca antes de usar o sistema
+        const mustChangePassword = !isDemoMode() && (WEAK_PASSWORDS.includes(credentials.password) || credentials.password.length < 8);
+        return { id: user.id, name: user.name, email: user.email, mustChangePassword };
       },
     }),
   ],
   callbacks: {
     async jwt({ token, user }) {
-      if (user) token.uid = (user as { id: string }).id;
+      if (user) {
+        token.uid = (user as { id: string }).id;
+        token.mustChangePassword = !!(user as { mustChangePassword?: boolean }).mustChangePassword;
+      }
       return token;
     },
     async session({ session, token }) {
-      if (session.user) (session.user as { id?: string }).id = token.uid as string;
+      if (session.user) {
+        (session.user as { id?: string }).id = token.uid as string;
+        (session.user as { mustChangePassword?: boolean }).mustChangePassword = !!token.mustChangePassword;
+      }
       return session;
     },
   },

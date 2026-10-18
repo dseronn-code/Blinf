@@ -1,6 +1,7 @@
 'use client';
 import { signIn } from 'next-auth/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input, Label } from '@/components/ui/input';
 import { Dialog } from '@/components/ui/dialog';
@@ -14,8 +15,16 @@ const DEMO = [
 ];
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('admin@gestaopro.com.br');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  // Acesso rápido e senhas de demonstração só aparecem no modo demonstração
+  const [cfg, setCfg] = useState<{ demo: boolean; setupNeeded: boolean }>({ demo: false, setupNeeded: false });
+  useEffect(() => {
+    fetch('/api/public/config').then((r) => r.json()).then((d) => {
+      setCfg(d);
+      if (d.setupNeeded) window.location.href = '/primeiro-acesso';
+    }).catch(() => {});
+  }, []);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [needOtp, setNeedOtp] = useState(false);
@@ -64,7 +73,7 @@ export default function LoginPage() {
             {['NF-e, NFC-e e NFS-e', 'Mercado Livre, Shopee, Amazon…', 'Conta digital, Pix e boletos', '31 automações prontas', 'Multiempresa (multi-CNPJ)', 'Assistente de IA'].map((t) => <li key={t}>✓ {t}</li>)}
           </ul>
         </div>
-        <p className="text-xs text-white/40">Ambiente de demonstração — integrações com SEFAZ, bancos e marketplaces são simuladas.</p>
+        {cfg.demo && <p className="text-xs text-white/40">Ambiente de demonstração — integrações com SEFAZ, bancos e marketplaces são simuladas.</p>}
       </div>
       <div className="flex items-center justify-center p-6">
         <form onSubmit={submit} className="w-full max-w-sm space-y-4">
@@ -86,12 +95,15 @@ export default function LoginPage() {
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button className="w-full" disabled={loading}>{loading ? 'Entrando…' : needOtp ? 'Verificar e entrar' : 'Entrar'}</Button>
-          <div className="rounded-lg border bg-muted/40 p-3">
-            <p className="mb-2 text-xs font-semibold text-muted-foreground">Acessos de demonstração (perfis com permissões diferentes)</p>
-            <div className="grid grid-cols-2 gap-2">
-              {DEMO.map((d) => <Button key={d.email} type="button" variant="outline" size="sm" onClick={() => submit(undefined, d)}>{d.label}</Button>)}
+          {cfg.demo && (
+            <div className="rounded-lg border bg-muted/40 p-3">
+              <p className="mb-2 text-xs font-semibold text-muted-foreground">Acessos de demonstração (perfis com permissões diferentes)</p>
+              <div className="grid grid-cols-2 gap-2">
+                {DEMO.map((d) => <Button key={d.email} type="button" variant="outline" size="sm" onClick={() => submit(undefined, d)}>{d.label}</Button>)}
+              </div>
             </div>
-          </div>
+          )}
+          {cfg.setupNeeded && <p className="text-center text-sm"><Link href="/primeiro-acesso" className="font-medium text-primary underline">Primeiro acesso: cadastrar minha empresa</Link></p>}
         </form>
       </div>
       <Dialog open={!!forgot} onOpenChange={(o) => !o && setForgot(null)} title="Esqueci minha senha" description="Enviaremos um link para você criar uma nova senha" size="sm" footer={forgot?.message ? <Button onClick={() => setForgot(null)}>Fechar</Button> : <Button disabled={forgot?.busy || !forgot?.email} onClick={sendForgot}>{forgot?.busy ? 'Enviando…' : 'Enviar link'}</Button>}>

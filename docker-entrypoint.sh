@@ -29,7 +29,9 @@ done
 echo "✅ Banco de dados conectado"
 echo "🗄️  Aplicando migrações..."
 npx prisma migrate deploy
-if [ "${SEED_DEMO:-true}" = "true" ]; then
+# Dados de demonstração só no modo demonstração (DEMO_MODE=true) ou com SEED_DEMO=true explícito.
+# Em produção o banco começa vazio e o primeiro acesso (/primeiro-acesso) cadastra a empresa real.
+if [ "${SEED_DEMO:-${DEMO_MODE:-false}}" = "true" ]; then
   # O seed só cria dados se o banco estiver vazio; roda em paralelo para o servidor
   # responder logo (plataformas como o Railway exigem resposta em poucos minutos)
   echo "🌱 Dados de demonstração em segundo plano (pulado se já existirem; ~10 min na primeira vez)..."

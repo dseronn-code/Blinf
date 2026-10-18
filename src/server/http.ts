@@ -5,10 +5,12 @@ import { prisma } from '@/lib/db';
 import type { AccessLevel, ModuleKey } from '@/lib/permissions';
 
 import { HttpError } from './errors';
+import { RealIntegrationRequired, isDemoMode } from '@/lib/demo';
 export { HttpError, fail } from './errors';
 
 export function toErrorResponse(e: unknown) {
   if (e instanceof HttpError) return NextResponse.json({ error: e.message, details: e.details }, { status: e.status });
+  if (e instanceof RealIntegrationRequired) return NextResponse.json({ error: e.message, code: 'CONFIGURACAO_NECESSARIA', feature: e.feature, howTo: e.howTo }, { status: 400 });
   if (e instanceof Prisma.PrismaClientKnownRequestError) {
     if (e.code === 'P2002') return NextResponse.json({ error: 'Registro duplicado: já existe um cadastro com estes dados únicos.' }, { status: 409 });
     if (e.code === 'P2003') return NextResponse.json({ error: 'Registro vinculado a outros documentos — não pode ser excluído.' }, { status: 409 });
@@ -33,6 +35,8 @@ export function route(mod: ModuleKey | null, level: AccessLevel, fn: Handler) {
   return async (req: Request, rp: RouteParams) => {
     try {
       const ctx = await getCtx();
+      // Senha padrão: só libera a troca de senha e os dados do próprio usuário
+      if (ctx.mustChangePassword && !/^\/api\/(account\/password|me)(\/|$)/.test(new URL(req.url).pathname)) throw new HttpError(403, 'Troque a sua senha para continuar');
       if (mod) requirePerm(ctx, mod, level);
       const params = rp?.params ? await rp.params : {};
       let body: any = undefined;

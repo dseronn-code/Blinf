@@ -4,6 +4,7 @@ import { route } from '@/server/http';
 import { COMPANY_COOKIE } from '@/server/context';
 import { fail } from '@/server/errors';
 import { runDailyRoutine } from '@/server/services/automations';
+import { isDemoMode } from '@/lib/demo';
 
 // Dados do usuário logado, empresas disponíveis e permissões
 export const GET = route(null, 'view', async ({ ctx }) => {
@@ -11,7 +12,7 @@ export const GET = route(null, 'view', async ({ ctx }) => {
   const unread = await prisma.notification.count({ where: { companyId: ctx.companyId, read: false } });
   // Rotina diária de automações (1x por dia por empresa)
   runDailyRoutine({ companyId: ctx.companyId, orgId: ctx.orgId, userName: 'Rotina diária' }).catch(() => {});
-  return { user: { id: ctx.userId, name: ctx.userName, email: ctx.email, role: ctx.roleName, isAdmin: ctx.isAdmin }, permissions: ctx.permissions, companyId: ctx.companyId, companies, consolidated: ctx.consolidated, stockMode: ctx.stockMode, unread };
+  return { user: { id: ctx.userId, name: ctx.userName, email: ctx.email, role: ctx.roleName, isAdmin: ctx.isAdmin }, permissions: ctx.permissions, companyId: ctx.companyId, companies, consolidated: ctx.consolidated, stockMode: ctx.stockMode, unread, demo: isDemoMode(), mustChangePassword: ctx.mustChangePassword };
 });
 
 // Troca de empresa ativa / visão consolidada

@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { AUTOMATIONS } from './automations';
+import { isDemoMode } from '@/lib/demo';
 
 /** Cria a estrutura padrão de uma nova empresa (depósito, contas, plano de contas, naturezas, automações) */
 export async function bootstrapCompany(companyId: string) {
@@ -10,7 +11,10 @@ export async function bootstrapCompany(companyId: string) {
     data: [
       { companyId, name: 'Caixa', type: 'CAIXA' },
       { companyId, name: 'Recebíveis de cartão', type: 'CARTAO', bankName: 'Adquirentes' },
-      { companyId, name: 'Conta Digital GestãoPro', type: 'CONTA_DIGITAL', bankCode: '999', bankName: 'GestãoPro Bank (simulado)', agency: '0001', accountNumber: String(Date.now()).slice(-7), pixKey: company.cnpj, isDefault: true },
+      // Conta bancária real da empresa: banco, agência, conta e chave Pix são preenchidos em Finanças → Contas bancárias
+      isDemoMode()
+        ? { companyId, name: 'Conta Digital GestãoPro', type: 'CONTA_DIGITAL', bankCode: '999', bankName: 'GestãoPro Bank (simulado)', agency: '0001', accountNumber: String(Date.now()).slice(-7), pixKey: company.cnpj, isDefault: true }
+        : { companyId, name: 'Conta bancária principal', type: 'CORRENTE', pixKey: company.cnpj, isDefault: true },
     ],
   });
   const chart: [string, string, string, string][] = [
