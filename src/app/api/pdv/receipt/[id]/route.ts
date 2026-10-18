@@ -48,7 +48,7 @@ export const GET = route('pdv', 'view', async ({ ctx, params, query }) => {
     L.push(center(`NFC-e nº ${inv.number}  Serie ${inv.series}  ${inv.issueDate.toLocaleString('pt-BR')}`));
     if (inv.protocol) L.push(center(`Protocolo ${inv.protocol}`));
     L.push(center(`Tributos aprox.: R$ ${m(inv.icmsValue + inv.pisValue + inv.cofinsValue + inv.ipiValue)} (Lei 12.741)`));
-    if (c.sefazMode !== 'ASSINADO' || !inv.signed) L.push(center('AMBIENTE DE DEMONSTRACAO - SEM VALOR FISCAL'));
+    if (inv.environment !== 1) L.push(center('EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL'));
   } else L.push(center(o!.date.toLocaleString('pt-BR')), center('NAO E DOCUMENTO FISCAL'));
   L.push(hr, center('Obrigado pela preferencia!'), '', '');
   const text = strip(L.join('\n'));

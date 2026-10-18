@@ -41,6 +41,12 @@ Restaurar um backup: `gunzip -c backups/gestaopro-AAAAMMDD-HHMM.sql.gz | docker 
 
 Para recriar os dados de demonstração: `docker compose exec app sh -c "SEED_FORCE=1 npm run db:seed"`.
 
+## 🏭 Produção × demonstração
+
+Em produção (padrão no Railway e no Docker), **nada é simulado**: o banco começa vazio e o **primeiro acesso** (`/primeiro-acesso`) cadastra a sua empresa real (dados preenchidos pelo CNPJ) e o administrador. Recursos que dependem de uma conta externa ficam bloqueados com a orientação do que configurar — por exemplo, emitir NF-e exige o certificado A1 (SEFAZ direta) ou a Focus NFe; boleto exige Asaas ou Mercado Pago; etiquetas exigem Melhor Envio ou Correios. Sem transportadora conectada usa-se frete próprio/retirada com rastreio digitado; sem provedor de cobrança, contas a receber ficam sem boleto (Pix estático com a chave da conta bancária, baixa manual). Senhas padrão obrigam a troca no primeiro login. Em **Configurações → Dados e backup**: backup completo e "apagar tudo e criar minha empresa".
+
+Para um servidor de demonstração (dados fictícios, acessos rápidos no login e integrações simuladas), defina `DEMO_MODE=true`.
+
 ## ☁️ Publicar no Railway (acesso pela internet e pelo celular)
 
 1. Entre em **railway.com** com sua conta do GitHub → **New Project** → **Deploy from GitHub repo** → escolha **Blinf**. Em *Settings → Source*, selecione o branch onde está o código.
@@ -49,9 +55,9 @@ Para recriar os dados de demonstração: `docker compose exec app sh -c "SEED_FO
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
    - `NEXTAUTH_SECRET` = uma frase secreta longa (ex.: gere em *Generate* ou digite 40 caracteres aleatórios)
 4. Aba **Settings → Networking → Generate Domain** (porta 3000 se perguntar). O endereço fica `https://<nome>.up.railway.app`.
-5. Aguarde o deploy (o `railway.json` já configura o Dockerfile e o health check). No primeiro start os dados de demonstração são carregados em segundo plano (~10 min); depois entre com `admin@gestaopro.com.br` / `admin123` e **troque a senha**.
+5. Aguarde o deploy (o `railway.json` já configura o Dockerfile e o health check) e abra o endereço: o **primeiro acesso** pede os dados da sua empresa e cria o seu login.
 
-Para começar sem dados de demonstração, defina `SEED_DEMO=false` antes do primeiro deploy (será preciso criar o primeiro usuário pelo banco). Para os webhooks e integrações reais, o domínio do Railway já é HTTPS público.
+Para um ambiente de demonstração com dados fictícios, defina `DEMO_MODE=true`. Para os webhooks e integrações reais, o domínio do Railway já é HTTPS público.
 
 **No celular:** abra o endereço no Chrome (Android) → menu ⋮ → **Instalar app**; no iPhone, Safari → Compartilhar → **Adicionar à Tela de Início**. A página `/celular` mostra um QR Code com o passo a passo. **Arquivo APK:** em **pwabuilder.com**, cole o endereço do Railway e baixe o pacote Android (instalável direto no celular).
 
