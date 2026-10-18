@@ -163,7 +163,7 @@ export default function SalesOrderPage() {
           )}
         </div>
       </div>
-      <PromptDialog open={cancel} onOpenChange={setCancel} destructive title="Cancelar pedido" description="Notas autorizadas serão canceladas na SEFAZ (simulada), a reserva/estoque será estornada e as contas em aberto canceladas." label="Justificativa (mín. 15 caracteres)" minLength={15} confirmText="Cancelar pedido" onConfirm={(reason) => run('cancel', { reason }, 'Pedido cancelado')} />
+      <PromptDialog open={cancel} onOpenChange={setCancel} destructive title="Cancelar pedido" description="Notas autorizadas serão canceladas na SEFAZ, a reserva/estoque será estornada e as contas em aberto canceladas." label="Justificativa (mín. 15 caracteres)" minLength={15} confirmText="Cancelar pedido" onConfirm={(reason) => run('cancel', { reason }, 'Pedido cancelado')} />
       {!isNew && data && <ReturnDialog open={retOpen} onOpenChange={setRetOpen} order={data} />}
       {!isNew && data && shipOpen && <ShipmentDialog order={data} onClose={() => setShipOpen(false)} />}
       {!isNew && data && <SplitDialog open={splitOpen} onOpenChange={setSplitOpen} order={data} onDone={(nid) => router.push(`/vendas/${nid}`)} />}

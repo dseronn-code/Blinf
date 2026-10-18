@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Plus, Copy, ExternalLink, XCircle, FileText, Receipt, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi, useAction, openFile } from '@/lib/api';
-import { PageHeader, DataTable, Field, SimBanner } from '@/components/common/page';
+import { PageHeader, DataTable, Field, SimBanner, useDemoMode } from '@/components/common/page';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
@@ -17,7 +17,9 @@ export default function Billing() {
   const act = useAction();
   const [n, setN] = useState<any>(null);
   const copy = (t: string) => { navigator.clipboard.writeText(t); toast.success('Copiado'); };
-  const withBilling = (boletos?.rows || []).filter((e: any) => e.boletoLine || e.pixPayload || e.provider);
+  const demo = useDemoMode();
+  // Produção: mostra também os títulos por boleto/Pix ainda sem cobrança registrada
+  const withBilling = (boletos?.rows || []).filter((e: any) => e.boletoLine || e.pixPayload || e.provider || (!demo && ['BOLETO', 'PIX'].includes(e.paymentMethod)));
   const gateway: { provider: string; name: string; environment: string; accountName?: string; autoCharge: boolean } | null = links?.gateway || null;
   const GW: Record<string, string> = { ASAAS: 'Asaas', MERCADO_PAGO: 'Mercado Pago' };
   const emit = async (r: any) => {
@@ -31,6 +33,10 @@ export default function Billing() {
         <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
           <b>Cobranças reais via {gateway.name}</b>{gateway.accountName ? ` (${gateway.accountName})` : ''}{gateway.environment === 'SANDBOX' ? ' — ambiente de testes' : ''}: boletos, Pix e cartão são registrados no provedor e baixados automaticamente quando o pagamento cai.
           {gateway.autoCharge ? ' Recebíveis por boleto/Pix são emitidos automaticamente ao faturar.' : ' Emissão automática desligada: use "Emitir cobrança".'} Títulos marcados como "simulada" ainda não foram registrados.
+        </div>
+      ) : !demo ? (
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <b>Sem cobrança registrada — conecte Asaas ou Mercado Pago</b> em Integrações → Contas e credenciais para emitir boletos, Pix e cartão com baixa automática. Enquanto isso, as contas a receber são lançadas normalmente; quando a conta bancária tem chave Pix cadastrada, o título recebe um Pix &quot;copia e cola&quot; estático para essa chave (o pagamento cai direto na sua conta, mas a <b>baixa é manual</b>).
         </div>
       ) : (
         <SimBanner>linha digitável, código de barras e BR Code Pix seguem os padrões reais (com dígitos verificadores e CRC16), mas não são registrados em banco algum. Use "Abrir" e pague na página pública para testar a baixa automática. Para cobrar de verdade, conecte o Asaas ou o Mercado Pago em Integrações → Contas e credenciais.</SimBanner>
@@ -48,11 +54,11 @@ export default function Billing() {
         <TabsContent value="boletos">
           <DataTable rows={withBilling} columns={[
             { key: 'dueDate', header: 'Vencimento', cell: (r: any) => fmtDate(r.dueDate) }, { key: 'contactName', header: 'Pagador' }, { key: 'description', header: 'Descrição' },
-            { key: 'provider', header: 'Cobrança', cell: (r: any) => r.provider ? <Badge tone="blue">{GW[r.provider] || r.provider}</Badge> : <Badge tone="yellow">Simulada</Badge> },
+            { key: 'provider', header: 'Cobrança', cell: (r: any) => r.provider ? <Badge tone="blue">{GW[r.provider] || r.provider}</Badge> : demo ? <Badge tone="yellow">Simulada</Badge> : r.pixPayload ? <Badge tone="gray">Pix estático · baixa manual</Badge> : <Badge tone="yellow">Sem cobrança registrada</Badge> },
             { key: 'boletoLine', header: 'Linha digitável', cell: (r: any) => r.boletoLine ? <button className="font-mono text-[10px] hover:text-primary" onClick={() => copy(r.boletoLine)}>{r.boletoLine}</button> : <span className="text-xs text-muted-foreground">{r.provider ? 'Pix / fatura' : '—'}</span> },
             { key: 'amount', header: 'Valor', align: 'right', cell: (r: any) => money(r.amount - r.paidAmount) },
             { key: 'a', header: '', align: 'right', cell: (r: any) => <div className="flex justify-end gap-1">
-              {r.provider ? (r.paymentUrl && <Button size="sm" variant="outline" onClick={() => window.open(r.paymentUrl, '_blank')}><ExternalLink /> Boleto / fatura</Button>) : <Button size="sm" variant="outline" onClick={() => openFile(`/api/finance/entries/${r.id}/boleto`)}><FileText /> PDF</Button>}
+              {r.provider ? (r.paymentUrl && <Button size="sm" variant="outline" onClick={() => window.open(r.paymentUrl, '_blank')}><ExternalLink /> Boleto / fatura</Button>) : demo && <Button size="sm" variant="outline" onClick={() => openFile(`/api/finance/entries/${r.id}/boleto`)}><FileText /> PDF</Button>}
               {r.pixPayload && <Button size="sm" variant="outline" onClick={() => copy(r.pixPayload)}>Pix copia e cola</Button>}
               {!r.provider && gateway && <Button size="sm" variant="outline" onClick={() => emit(r)}><Receipt /> Emitir no {gateway.name}</Button>}
               {r.provider && <Button size="icon" variant="ghost" title="Cancelar cobrança" onClick={() => confirm('Cancelar a cobrança no provedor? O título continua em aberto.') && act('POST', `/api/finance/entries/${r.id}/cancel-charge`, {}, 'Cobrança cancelada')}><Ban /></Button>}

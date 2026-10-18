@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { ArrowUpRight, ArrowDownLeft, Send, Landmark, QrCode, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { useApi, useAction } from '@/lib/api';
-import { PageHeader, DataTable, Field, SimBanner } from '@/components/common/page';
+import { PageHeader, DataTable, Field, SimBanner, useDemoMode } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { Input, Select } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -13,7 +13,8 @@ import { money, fmtDateTime, cn } from '@/lib/utils';
 
 export default function DigitalAccount() {
   const { data: banks } = useApi<any>('/api/finance/banks');
-  const digital = banks?.rows.find((b: any) => b.type === 'CONTA_DIGITAL');
+  const demo = useDemoMode();
+  const digital = banks?.rows.find((b: any) => b.type === 'CONTA_DIGITAL') || banks?.rows.find((b: any) => b.isDefault) || banks?.rows[0];
   const [accId, setAccId] = useState<string>('');
   const acc = banks?.rows.find((b: any) => b.id === (accId || digital?.id));
   const { data: tx } = useApi<any>(acc ? `/api/finance/transactions?bankAccountId=${acc.id}&pageSize=200` : null);
@@ -26,18 +27,19 @@ export default function DigitalAccount() {
   };
   return (
     <div>
-      <PageHeader title="Conta Digital PJ" description="Saldo, extrato, Pix, TED e transferências entre contas — integrada ao financeiro (boletos e Pix recebidos caem aqui)" />
+      <PageHeader title={demo ? 'Conta Digital PJ' : 'Saldos e extratos'} description={demo ? 'Saldo, extrato, Pix, TED e transferências entre contas — integrada ao financeiro (boletos e Pix recebidos caem aqui)' : 'Saldo e extrato de cada conta conforme os lançamentos do sistema, e transferências entre as contas da empresa'} />
+      {!demo && <div className="mb-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">O sistema não movimenta dinheiro no banco: faça Pix e TED pelo app do seu banco e registre a saída em Contas a pagar (ou importe o extrato OFX em Conciliação). Transferências entre as contas da empresa são lançadas aqui.</div>}
       <SimBanner>conta digital fictícia "GestãoPro Bank"; transferências e Pix não movimentam dinheiro real.</SimBanner>
       <div className="mb-4 grid gap-3 md:grid-cols-[1fr_2fr]">
         <Card className="bg-gradient-to-br from-emerald-700 to-emerald-900 text-white">
           <CardContent className="space-y-2">
             <div className="flex items-center justify-between"><span className="text-sm text-white/70">{acc?.name}</span><Landmark className="h-5 w-5 text-white/70" /></div>
             <div className="text-3xl font-bold tabular-nums">{money(acc?.balance)}</div>
-            <div className="text-xs text-white/70">Ag. {acc?.agency} · Conta {acc?.accountNumber} · Banco {acc?.bankCode}</div>
+            {(acc?.agency || acc?.accountNumber || acc?.bankCode) && <div className="text-xs text-white/70">Ag. {acc?.agency || '—'} · Conta {acc?.accountNumber || '—'} · Banco {acc?.bankCode || '—'}</div>}
             {acc?.pixKey && <div className="flex items-center gap-2 text-xs"><QrCode className="h-4 w-4" /> Chave Pix: {acc.pixKey}<button onClick={() => { navigator.clipboard.writeText(acc.pixKey); toast.success('Chave copiada'); }}><Copy className="h-3.5 w-3.5" /></button></div>}
             <div className="flex gap-2 pt-2">
-              <Button size="sm" variant="secondary" onClick={() => setTr({ kind: 'PIX' })}><Send /> Pix</Button>
-              <Button size="sm" variant="secondary" onClick={() => setTr({ kind: 'TED' })}>TED</Button>
+              {demo && <Button size="sm" variant="secondary" onClick={() => setTr({ kind: 'PIX' })}><Send /> Pix</Button>}
+              {demo && <Button size="sm" variant="secondary" onClick={() => setTr({ kind: 'TED' })}>TED</Button>}
               <Button size="sm" variant="secondary" onClick={() => setTr({ kind: 'INTERNA' })}>Entre contas</Button>
             </div>
           </CardContent>

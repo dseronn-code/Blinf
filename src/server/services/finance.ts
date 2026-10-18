@@ -8,6 +8,7 @@ import { addDays, round2, randomDigits, onlyDigits } from '@/lib/utils';
 import { buildBoleto, buildPixPayload } from '@/lib/br';
 import { fail } from '../errors';
 import { emit } from '../events';
+import { isDemoMode } from '@/lib/demo';
 
 export async function chartAccountId(db: Db, companyId: string, code: string) {
   const acc = await db.chartAccount.findFirst({ where: { companyId, code } });
@@ -82,9 +83,10 @@ export async function createEntries(db: Db, input: CreateEntriesInput) {
       paymentMethod: input.paymentMethod || null,
       notes: input.notes || null,
     };
-    // Recebíveis por boleto/Pix já nascem com os dados de cobrança (simulados)
+    // Recebíveis por boleto/Pix já nascem com os dados de cobrança (simulados no modo demonstração;
+    // em produção, sem provedor, só o Pix estático da chave cadastrada — boleto só via Asaas/Mercado Pago)
     if (input.type === 'RECEBER' && company && bank && (input.paymentMethod === 'BOLETO' || input.paymentMethod === 'PIX')) {
-      Object.assign(data, billingData(company, bank, parts[i], dueDate));
+      Object.assign(data, billingData(company, bank, parts[i], dueDate, input.paymentMethod));
     }
     created.push(await db.financialEntry.create({ data }));
   }
@@ -95,8 +97,26 @@ export async function createEntries(db: Db, input: CreateEntriesInput) {
   return created;
 }
 
-export function billingData(company: { cnpj: string; tradeName: string | null; name: string; city: string | null }, bank: { bankCode: string | null; agency: string | null; accountNumber: string | null; pixKey: string | null }, amount: number, dueDate: Date) {
+/** Onde conectar a cobrança real (boleto/Pix registrados com baixa automática) */
+export const PAYMENT_HOWTO = 'Conecte o Asaas ou o Mercado Pago em Integrações → Contas e credenciais.';
+/** Conta fictícia da demonstração ("GestãoPro Bank", código 999) */
+export const isSimulatedBank = (bank: { bankCode?: string | null } | null | undefined) => !!bank && bank.bankCode === '999';
+/** Chave Pix real cadastrada na conta bancária (em produção a conta fictícia 999 não conta) */
+export const realPixKey = (bank: { bankCode?: string | null; pixKey: string | null } | null | undefined) => (bank?.pixKey && (isDemoMode() || !isSimulatedBank(bank)) ? bank.pixKey : null);
+
+/**
+ * Dados de cobrança sem provedor conectado.
+ * - Modo demonstração: boleto FEBRABAN + BR Code Pix gerados localmente (simulação).
+ * - Produção: NADA de boleto inventado. Só o Pix "copia e cola" estático para a chave Pix cadastrada
+ *   na conta bancária (BR Code legítimo — o pagador paga direto para a chave; a baixa é manual).
+ */
+export function billingData(company: { cnpj: string; tradeName: string | null; name: string; city: string | null }, bank: { bankCode: string | null; agency: string | null; accountNumber: string | null; pixKey: string | null }, amount: number, dueDate: Date, method?: string | null): { boletoNumber?: string; boletoLine?: string; boletoBarcode?: string; pixPayload?: string } {
   const ourNumber = randomDigits(11);
+  if (!isDemoMode()) {
+    const key = realPixKey(bank);
+    if (!key || method === 'BOLETO') return {};
+    return { pixPayload: buildPixPayload({ key, name: company.tradeName || company.name, city: company.city || 'Sao Paulo', amount, txid: `GP${ourNumber}` }) };
+  }
   const b = buildBoleto({ bankCode: bank.bankCode || '999', amount, dueDate, ourNumber, agency: onlyDigits(bank.agency || '0001'), account: onlyDigits(bank.accountNumber || '1234567') });
   const pix = buildPixPayload({
     key: bank.pixKey || onlyDigits(company.cnpj),

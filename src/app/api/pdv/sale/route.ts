@@ -6,15 +6,17 @@ import { round2, randomDigits, onlyDigits } from '@/lib/utils';
 import { isValidCPF, isValidCNPJ } from '@/lib/br';
 import { createOrder, markInvoicedWithoutNote } from '@/server/services/sales';
 import { defaultBankAccount } from '@/server/services/finance';
+import { isDemoMode } from '@/lib/demo';
 
 /**
  * Finaliza uma venda no PDV: cria o pedido (origem PDV), registra os pagamentos
- * no caixa/maquininha (POS simulado) e dispara a emissão da NFC-e (automação).
+ * no caixa/maquininha (POS simulado só no modo demonstração; em produção NSU/autorização/bandeira
+ * são os informados pelo operador, opcionais) e dispara a emissão da NFC-e (automação).
  */
 export const POST = route('pdv', 'edit', async ({ ctx, body }) => {
   const session = await prisma.cashSession.findFirst({ where: { companyId: ctx.companyId, status: 'ABERTO' } });
   if (!session) fail(400, 'Abra o caixa antes de vender');
-  const payments: { method: string; amount: number; installments?: number }[] = (body.payments || []).filter((p: { amount: number }) => Number(p.amount) > 0);
+  const payments: { method: string; amount: number; installments?: number; nsu?: string; authCode?: string; brand?: string }[] = (body.payments || []).filter((p: { amount: number }) => Number(p.amount) > 0);
   if (!payments.length) fail(400, 'Informe a forma de pagamento');
   const doc = onlyDigits(body.customerDoc);
   if (doc && !(doc.length === 11 ? isValidCPF(doc) : isValidCNPJ(doc))) fail(400, 'CPF/CNPJ do consumidor inválido');
@@ -34,6 +36,10 @@ export const POST = route('pdv', 'edit', async ({ ctx, body }) => {
   const change = round2(paid - order.total);
   // Registra pagamentos no caixa e transações POS (cartão/pix) com taxa
   const terminal = await prisma.posTerminal.findFirst({ where: { companyId: ctx.companyId, active: true, ...(body.terminalId ? { id: body.terminalId } : {}) } });
+  const demo = isDemoMode();
+  const posSlip = (p: (typeof payments)[number]) => demo
+    ? { nsu: randomDigits(9), authCode: randomDigits(6), brand: p.method === 'PIX' ? null : ['Visa', 'Mastercard', 'Elo'][Math.floor(Math.random() * 3)] }
+    : { nsu: String(p.nsu ?? '').trim().slice(0, 20), authCode: String(p.authCode ?? '').trim().slice(0, 20), brand: p.method === 'PIX' ? null : String(p.brand ?? '').trim().slice(0, 30) || null };
   let remaining = order.total;
   for (const p of payments) {
     const amount = round2(Math.min(Number(p.amount), remaining + (p.method === 'DINHEIRO' ? 0 : 0)));
@@ -43,7 +49,7 @@ export const POST = route('pdv', 'edit', async ({ ctx, body }) => {
     if (terminal && ['CARTAO_CREDITO', 'CARTAO_DEBITO', 'PIX'].includes(p.method) && value > 0) {
       const rate = p.method === 'CARTAO_CREDITO' ? terminal.creditFee : p.method === 'CARTAO_DEBITO' ? terminal.debitFee : terminal.pixFee;
       const fee = round2((value * rate) / 100);
-      await prisma.posTransaction.create({ data: { companyId: ctx.companyId, terminalId: terminal.id, method: p.method === 'PIX' ? 'PIX' : p.method === 'CARTAO_CREDITO' ? 'CREDITO' : 'DEBITO', installments: p.installments || 1, amount: value, fee, netAmount: round2(value - fee), nsu: randomDigits(9), authCode: randomDigits(6), brand: p.method === 'PIX' ? null : ['Visa', 'Mastercard', 'Elo'][Math.floor(Math.random() * 3)], orderId: order.id } });
+      await prisma.posTransaction.create({ data: { companyId: ctx.companyId, terminalId: terminal.id, method: p.method === 'PIX' ? 'PIX' : p.method === 'CARTAO_CREDITO' ? 'CREDITO' : 'DEBITO', installments: p.installments || 1, amount: value, fee, netAmount: round2(value - fee), ...posSlip(p), orderId: order.id } });
       // taxa lançada na conta de recebíveis de cartão (liquidação líquida em D+1/D+30)
       const bank = p.method === 'PIX' ? await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL') : await defaultBankAccount(prisma, ctx.companyId, 'CARTAO');
       if (bank && fee > 0) await prisma.bankTransaction.create({ data: { companyId: ctx.companyId, bankAccountId: bank.id, date: new Date(), description: `Taxa ${terminal.acquirer} - pedido ${order.number}`, amount: -fee, source: 'TARIFA', reconciled: true } });

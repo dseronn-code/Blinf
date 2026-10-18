@@ -82,10 +82,10 @@ export const AUTOMATIONS: AutomationDef[] = [
   },
   {
     key: 'GERAR_ETIQUETA_FATURAMENTO', group: 'Logística', event: 'order.invoiced', name: 'Gerar etiqueta de envio ao faturar',
-    description: 'Cota o frete, escolhe a melhor opção e gera a etiqueta com código de rastreio.',
+    description: 'Cota o frete no Melhor Envio/Correios conectados e gera a etiqueta; sem provedor, registra o envio como frete próprio (sem código de rastreio inventado).',
     run: async (p, a) => {
       const s = await createShipment(a, str(p.orderId));
-      return s ? `Etiqueta ${s.carrier} ${s.service} - ${s.trackingCode}` : 'Pedido sem envio (balcão/serviço)';
+      return s ? `${s.provider === 'PROPRIO' ? 'Envio' : 'Etiqueta'} ${s.carrier} ${s.service}${s.trackingCode ? ` - ${s.trackingCode}` : s.status === 'PENDENTE' ? ' - aguardando compra da etiqueta' : ''}` : 'Pedido sem envio (balcão/serviço)';
     },
   },
   {
@@ -115,7 +115,7 @@ export const AUTOMATIONS: AutomationDef[] = [
     description: 'Ao concluir a conferência de embalagem, garante que o pedido possui etiqueta de envio.',
     run: async (p, a) => {
       const s = await createShipment(a, str(p.orderId));
-      return s ? `Etiqueta ${s.trackingCode}` : 'Sem envio';
+      return s ? `${s.provider === 'PROPRIO' ? 'Envio' : 'Etiqueta'} ${s.carrier} ${s.service}${s.trackingCode ? ` - ${s.trackingCode}` : ''}` : 'Sem envio';
     },
   },
   // ---------------- Compras / estoque ----------------
@@ -185,15 +185,17 @@ export const AUTOMATIONS: AutomationDef[] = [
   },
   {
     key: 'NOTIFICAR_RASTREIO', group: 'Logística', event: 'shipment.posted', name: 'Enviar código de rastreio ao cliente',
-    description: 'Envia e-mail (simulado) ao cliente com o código de rastreio e o link de acompanhamento.',
+    description: 'Envia e-mail (SMTP) e WhatsApp ao cliente com o código de rastreio e o link de acompanhamento, quando configurados em Integrações → Contas e credenciais.',
     run: async (p) => {
       const s = await prisma.shipment.findUnique({ where: { id: str(p.shipmentId) }, include: { salesOrder: { include: { customer: true } } } });
       const c = s?.salesOrder.customer;
-      const body = `Olá, ${c?.name}! Seu pedido nº ${s?.salesOrder.number} foi postado via ${s?.carrier} (${s?.service}).\nCódigo de rastreio: ${s?.trackingCode}\nPrazo estimado: ${s?.deadlineDays} dia(s) úteis.`;
-      const link = s?.trackingCode ? (s.carrier === 'Correios' ? `https://rastreamento.correios.com.br/app/index.php?objeto=${s.trackingCode}` : `https://www.melhorrastreio.com.br/rastreio/${s.trackingCode}`) : '';
-      await sendTemplate(str(p.companyId), 'rastreio', { cliente: c?.name, pedido: s?.salesOrder.number, transportadora: `${s?.carrier} (${s?.service})`, rastreio: s?.trackingCode, prazo: `${s?.deadlineDays} dia(s) úteis`, link }, { to: c?.email, related: `order:${s?.salesOrderId}` });
+      // Frete próprio: só o código digitado pelo usuário (se houver), sem prazo nem link de transportadora
+      const manual = s?.provider === 'PROPRIO';
+      const body = `Olá, ${c?.name}! Seu pedido nº ${s?.salesOrder.number} foi postado via ${s?.carrier} (${s?.service}).${s?.trackingCode ? `\nCódigo de rastreio: ${s.trackingCode}` : ''}${!manual && s?.deadlineDays ? `\nPrazo estimado: ${s.deadlineDays} dia(s) úteis.` : ''}`;
+      const link = s?.trackingCode && !manual ? (s.carrier === 'Correios' ? `https://rastreamento.correios.com.br/app/index.php?objeto=${s.trackingCode}` : `https://www.melhorrastreio.com.br/rastreio/${s.trackingCode}`) : '';
+      await sendTemplate(str(p.companyId), 'rastreio', { cliente: c?.name, pedido: s?.salesOrder.number, transportadora: `${s?.carrier} (${s?.service})`, rastreio: s?.trackingCode || '-', prazo: !manual && s?.deadlineDays ? `${s.deadlineDays} dia(s) úteis` : '-', link }, { to: c?.email, related: `order:${s?.salesOrderId}` });
       await sendMessage(str(p.companyId), { channel: 'WHATSAPP', to: c?.mobile, subject: 'Rastreio', body, related: `order:${s?.salesOrderId}`, wa: { event: 'rastreio', params: [c?.name || '', String(s?.salesOrder.number), `${s?.carrier} (${s?.service})`, s?.trackingCode || ''] } });
-      return `Rastreio ${s?.trackingCode} enviado para ${c?.email || c?.mobile || 'cliente sem contato'}`;
+      return `Aviso de postagem${s?.trackingCode ? ` (rastreio ${s.trackingCode})` : ''} enviado para ${c?.email || c?.mobile || 'cliente sem contato'}`;
     },
   },
   {
@@ -207,7 +209,7 @@ export const AUTOMATIONS: AutomationDef[] = [
   // ---------------- Fiscal ----------------
   {
     key: 'ENVIAR_DANFE_CLIENTE', group: 'Fiscal', event: 'invoice.authorized', name: 'Enviar DANFE e XML ao cliente e ao contador',
-    description: 'Após a autorização, envia (simulado) o DANFE/XML por e-mail ao cliente e ao Portal do Contador.',
+    description: 'Após a autorização, envia o DANFE/XML por e-mail (SMTP configurado) ao cliente e ao Portal do Contador.',
     run: async (p) => {
       const inv = await prisma.invoice.findUnique({ where: { id: str(p.invoiceId) } });
       const c = inv?.customerId ? await prisma.contact.findUnique({ where: { id: inv.customerId } }) : null;
@@ -246,7 +248,7 @@ export const AUTOMATIONS: AutomationDef[] = [
   },
   {
     key: 'COBRANCA_VENCIDOS', group: 'Financeiro', event: 'daily.routine', name: 'Régua de cobrança de contas vencidas',
-    description: 'Rotina diária: notifica e envia lembrete (simulado) aos clientes com contas vencidas.',
+    description: 'Rotina diária: notifica e envia lembrete por e-mail/WhatsApp (quando configurados) aos clientes com contas vencidas.',
     run: async (_p, a) => {
       const overdue = await prisma.financialEntry.findMany({ where: { companyId: a.companyId, type: 'RECEBER', status: { in: ['ABERTO', 'PARCIAL'] }, dueDate: { lt: new Date(new Date().toDateString()) } } });
       for (const e of overdue.slice(0, 50)) {
@@ -257,7 +259,7 @@ export const AUTOMATIONS: AutomationDef[] = [
       }
       if (overdue.length) {
         const total = round2(overdue.reduce((s, e) => s + e.amount - e.paidAmount, 0));
-        await notify(a.companyId, 'Contas vencidas', `${overdue.length} conta(s) a receber vencida(s) — R$ ${total.toFixed(2)}. Lembretes enviados (simulado).`, { level: 'error', link: '/financeiro/receber?status=VENCIDO' });
+        await notify(a.companyId, 'Contas vencidas', `${overdue.length} conta(s) a receber vencida(s) — R$ ${total.toFixed(2)}. Lembretes registrados na caixa de saída (Configurações → Sistema).`, { level: 'error', link: '/financeiro/receber?status=VENCIDO' });
       }
       return `${overdue.length} lembrete(s) de cobrança`;
     },
@@ -372,7 +374,7 @@ export const AUTOMATIONS: AutomationDef[] = [
   },
   {
     key: 'OS_CONCLUIDA_AVISO', group: 'Serviços', event: 'service_order.finished', name: 'Avisar cliente quando a OS for concluída',
-    description: 'Envia mensagem (simulada) ao cliente avisando que o equipamento/serviço está pronto.',
+    description: 'Envia e-mail/WhatsApp (quando configurados) ao cliente avisando que o equipamento/serviço está pronto.',
     run: async (p, a) => {
       const os = await prisma.serviceOrder.findUnique({ where: { id: str(p.serviceOrderId) }, include: { customer: true } });
       const body = `Olá, ${os?.customer.name}! Seu ${os?.equipment || 'serviço'} (OS nº ${os?.number}) está pronto para retirada. Total: ${money(os?.total)}.`;
@@ -384,7 +386,7 @@ export const AUTOMATIONS: AutomationDef[] = [
   },
   {
     key: 'BOAS_VINDAS_CLIENTE', group: 'Cadastros', event: 'contact.created', name: 'E-mail de boas-vindas para novo cliente',
-    description: 'Novo cliente cadastrado recebe e-mail de boas-vindas (simulado).',
+    description: 'Novo cliente cadastrado recebe e-mail de boas-vindas (SMTP configurado em Integrações → Contas e credenciais).',
     run: async (p) => {
       const c = await prisma.contact.findUnique({ where: { id: str(p.contactId) } });
       const company = await prisma.company.findUnique({ where: { id: str(p.companyId) } });

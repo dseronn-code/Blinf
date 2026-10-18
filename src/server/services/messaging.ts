@@ -2,12 +2,14 @@
  * Mensagens para clientes/fornecedores (e-mail e WhatsApp).
  * Toda mensagem passa pela caixa de saída (OutboxMessage) e é enviada pela fila.
  * - E-mail: SMTP da empresa (Integrações → Contas → SMTP) → senão SMTP_HOST do
- *   ambiente → senão fica registrado como SIMULADO. HTML (modelos) + texto, com
- *   anexos gerados na hora do envio (DANFE/XML da nota).
- * - WhatsApp: Cloud API da empresa (modelos aprovados / janela de 24 h) → senão SIMULADO.
+ *   ambiente → senão fica NAO_ENVIADO com o motivo (no modo demonstração: SIMULADO).
+ *   HTML (modelos) + texto, com anexos gerados na hora do envio (DANFE/XML da nota).
+ * - WhatsApp: Cloud API da empresa (modelos aprovados / janela de 24 h) → senão
+ *   NAO_ENVIADO com o motivo (demonstração: SIMULADO). Nunca finge um envio em produção.
  */
 import nodemailer, { type Transporter } from 'nodemailer';
 import { prisma } from '@/lib/db';
+import { isDemoMode } from '@/lib/demo';
 import { enqueue, registerJob } from './jobs';
 import { render } from './emailTemplates';
 import { getAccount } from '../integrations/accounts';
@@ -35,7 +37,7 @@ export async function sendTemplate(companyId: string, key: string, vars: Record<
 }
 
 let envTransport: Transporter | null = null;
-/** SMTP da empresa → SMTP do ambiente → null (simulado) */
+/** SMTP da empresa → SMTP do ambiente → null (não configurado) */
 export async function emailTransport(companyId: string) {
   const acc = await getAccount(companyId, 'SMTP').catch(() => null);
   if (acc) return { transport: smtpTransport(acc), from: smtpFrom(acc), replyTo: (acc.settings.replyTo as string) || undefined };
@@ -78,16 +80,21 @@ async function buildAttachments(list: OutboxAttachment[] | undefined) {
   return out;
 }
 
-const DONE = ['ENVIADO', 'SIMULADO', 'ENTREGUE', 'LIDO'];
+const DONE = ['ENVIADO', 'SIMULADO', 'NAO_ENVIADO', 'ENTREGUE', 'LIDO'];
+
+export const EMAIL_HOWTO = 'configure o e-mail em Integrações → Contas e credenciais → SMTP';
+export const WHATSAPP_HOWTO = 'conecte o WhatsApp em Integrações → Contas e credenciais → WhatsApp';
+/** Sem canal configurado: SIMULADO na demonstração; em produção NAO_ENVIADO com o motivo (nada é fingido) */
+export const unsentStatus = (howTo: string) => (isDemoMode() ? { status: 'SIMULADO' } : { status: 'NAO_ENVIADO', error: `Não enviado: ${howTo}` });
 
 registerJob('outbox.send', async ({ id, attachments, wa }) => {
   const m = await prisma.outboxMessage.findUnique({ where: { id } });
   if (!m || DONE.includes(m.status)) return;
-  const done = (data: { status: string; providerRef?: string | null; error?: string | null }) => prisma.outboxMessage.update({ where: { id }, data: { sentAt: data.status === 'ERRO' ? undefined : new Date(), error: null, ...data } });
+  const done = (data: { status: string; providerRef?: string | null; error?: string | null }) => prisma.outboxMessage.update({ where: { id }, data: { sentAt: data.status === 'ERRO' || data.status === 'NAO_ENVIADO' ? undefined : new Date(), error: null, ...data } });
   try {
     if (m.channel === 'WHATSAPP') {
       const acc = await getAccount(m.companyId, 'WHATSAPP').catch(() => null);
-      if (!acc) return void (await done({ status: 'SIMULADO' }));
+      if (!acc) return void (await done(unsentStatus(WHATSAPP_HOWTO)));
       const to = toE164(m.to);
       if (!to) return void (await done({ status: 'ERRO', error: `Telefone inválido para WhatsApp: ${m.to}` }));
       let payload: object;
@@ -102,7 +109,7 @@ registerJob('outbox.send', async ({ id, attachments, wa }) => {
       return;
     }
     const t = await emailTransport(m.companyId);
-    if (!t) return void (await done({ status: 'SIMULADO' }));
+    if (!t) return void (await done(unsentStatus(EMAIL_HOWTO)));
     const info = await t.transport.sendMail({ from: t.from, replyTo: t.replyTo, to: m.to, subject: m.subject, text: m.body, ...(m.html ? { html: m.html } : {}), attachments: await buildAttachments(attachments) });
     await done({ status: 'ENVIADO', providerRef: info.messageId || null });
   } catch (e) {

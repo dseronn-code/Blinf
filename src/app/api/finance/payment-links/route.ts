@@ -3,11 +3,12 @@ import { route } from '@/server/http';
 import { fail } from '@/server/errors';
 import { round2, randomDigits, addDays } from '@/lib/utils';
 import { buildPixPayload } from '@/lib/br';
-import { defaultBankAccount } from '@/server/services/finance';
+import { defaultBankAccount, realPixKey, PAYMENT_HOWTO } from '@/server/services/finance';
+import { requireRealOrDemo, isDemoMode } from '@/lib/demo';
 import { paymentAccount, gatewayFor } from '@/server/services/payments';
 
 export const GET = route('financeiro', 'view', async ({ ctx }) => {
-  // Provedor de cobrança conectado (Asaas/Mercado Pago) — null = cobranças simuladas
+  // Provedor de cobrança conectado (Asaas/Mercado Pago) — null = sem cobrança registrada (simulada só no modo demonstração)
   const acc = await paymentAccount(ctx.companyId);
   return {
     rows: await prisma.paymentLink.findMany({ where: { companyId: ctx.companyId }, orderBy: { createdAt: 'desc' } }),
@@ -21,7 +22,10 @@ export const POST = route('financeiro', 'edit', async ({ ctx, body }) => {
   if (!(amount > 0)) fail(400, 'Informe o valor');
   const company = await prisma.company.findUnique({ where: { id: ctx.companyId } });
   const bank = await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL');
+  // Produção: sem provedor, o link só pode oferecer o Pix estático da chave cadastrada (baixa manual)
+  const pixKey = isDemoMode() ? bank?.pixKey || company!.cnpj : realPixKey(bank);
+  if (!pixKey && !(await paymentAccount(ctx.companyId))) requireRealOrDemo('Link de pagamento', `${PAYMENT_HOWTO} Ou cadastre a chave Pix da conta bancária em Finanças → Contas bancárias.`);
   const slug = `pg${randomDigits(10)}`;
   const entry = await prisma.financialEntry.create({ data: { companyId: ctx.companyId, type: 'RECEBER', description: body.description || 'Link de pagamento', contactName: body.customerName || null, dueDate: body.expiresAt ? new Date(body.expiresAt) : addDays(new Date(), 7), amount, origin: 'MANUAL', paymentMethod: 'LINK', chartAccountId: (await prisma.chartAccount.findFirst({ where: { companyId: ctx.companyId, code: '1.1.01' } }))?.id } });
-  return prisma.paymentLink.create({ data: { companyId: ctx.companyId, slug, description: body.description || 'Pagamento', amount, methods: body.methods || 'TODOS', customerName: body.customerName || null, entryId: entry.id, expiresAt: entry.dueDate, pixPayload: buildPixPayload({ key: bank?.pixKey || company!.cnpj, name: company!.tradeName || company!.name, city: company!.city || 'SAO PAULO', amount, txid: slug }) } });
+  return prisma.paymentLink.create({ data: { companyId: ctx.companyId, slug, description: body.description || 'Pagamento', amount, methods: body.methods || 'TODOS', customerName: body.customerName || null, entryId: entry.id, expiresAt: entry.dueDate, pixPayload: pixKey ? buildPixPayload({ key: pixKey, name: company!.tradeName || company!.name, city: company!.city || 'SAO PAULO', amount, txid: slug }) : null } });
 });

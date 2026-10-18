@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { money, fmtDate, fmtDoc, cn } from '@/lib/utils';
 
-/** Página pública de pagamento (link / Pix) — cobrança real do Asaas/Mercado Pago quando conectado; senão simula o checkout do PSP */
+/** Página pública de pagamento (link / Pix) — cobrança real do Asaas/Mercado Pago quando conectado; senão Pix estático da empresa (produção) ou checkout simulado (modo demonstração) */
 export default function PayPage() {
   const { slug } = useParams<{ slug: string }>();
   const [link, setLink] = useState<any>(null);
@@ -66,7 +66,9 @@ export default function PayPage() {
   if (link.error) return <div className="flex min-h-screen items-center justify-center">{link.error}</div>;
   const qr = link.pixPayload ? `/api/public/qr?data=${encodeURIComponent(link.pixPayload)}` : null;
   const realQr = realPix ? `/api/public/qr?data=${encodeURIComponent(realPix)}` : null;
-  const methods = link.methods === 'TODOS' ? ['PIX', 'BOLETO', 'CARTAO'] : [link.methods];
+  const demo = !!link.demo;
+  // Produção sem provedor: só existe o Pix estático para a chave da empresa (sem boleto/cartão simulados)
+  const methods = !gateway && !demo ? (link.pixPayload ? ['PIX'] : []) : link.methods === 'TODOS' ? ['PIX', 'BOLETO', 'CARTAO'] : [link.methods];
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
       <Card className="w-full max-w-md">
@@ -107,6 +109,14 @@ export default function PayPage() {
                   {method === 'CARTAO' && <Button className="h-11 w-full" disabled={loadingCharge} onClick={payCard}><CreditCard className="mr-1 h-4 w-4" />{loadingCharge ? 'Aguarde…' : `Pagar com cartão (${gateway})`}</Button>}
                   <p className="text-center text-[11px] text-muted-foreground">Pagamento processado com segurança por {gateway}.{link.expiresAt && ` Vence em ${fmtDate(link.expiresAt)}.`}</p>
                 </>
+              ) : !demo ? (
+                link.pixPayload ? (
+                  <div className="space-y-2 text-center">
+                    {qr && <img src={qr} alt="QR Code Pix" className="mx-auto h-48 w-48 rounded border" />}
+                    <button className="flex w-full items-center gap-2 rounded border bg-muted/40 p-2 text-left font-mono text-[10px] break-all" onClick={() => { navigator.clipboard.writeText(link.pixPayload); toast.success('Pix copia e cola copiado'); }}><Copy className="h-4 w-4 shrink-0" />{link.pixPayload}</button>
+                    <p className="text-xs text-muted-foreground">Pague pelo app do seu banco. O valor vai direto para a conta de {link.company?.tradeName || link.company?.name}, que confirmará o recebimento.{link.expiresAt && ` Vence em ${fmtDate(link.expiresAt)}.`}</p>
+                  </div>
+                ) : <p className="py-4 text-center text-sm text-muted-foreground">Nenhuma forma de pagamento online disponível para este link. Entre em contato com {link.company?.tradeName || link.company?.name}.</p>
               ) : (
                 <>
                 {method === 'PIX' && link.pixPayload && (

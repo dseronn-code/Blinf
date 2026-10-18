@@ -64,7 +64,7 @@ export default function Picking() {
                     { key: 'packedQty', header: 'Conferido', align: 'right', cell: (i: any) => <b>{num(i.packedQty)}</b> },
                     { key: 's', header: '', cell: (i: any) => (i.packedQty >= i.quantity ? <Badge tone="green"><PackageCheck className="mr-1 h-3 w-3" /> OK</Badge> : <Badge tone="orange">faltam {num(i.quantity - i.packedQty)}</Badge>) },
                   ]} />
-                  <p className="text-xs text-muted-foreground">Dica: clique no SKU para preenchê-lo no campo (simula a leitura do código de barras).</p>
+                  <p className="text-xs text-muted-foreground">Dica: clique no SKU para preenchê-lo no campo (equivale à leitura do código de barras).</p>
                 </CardContent>
               </Card>
             ) : <Card className="flex items-center justify-center p-10 text-sm text-muted-foreground">Selecione um pedido para conferir</Card>}

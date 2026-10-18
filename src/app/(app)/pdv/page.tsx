@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Banknote, CreditCard, QrCode, ScanBarcode, Trash2, Minus, Plus, Printer, Lock, Unlock, ArrowDownToLine, ArrowUpFromLine, Search, WifiOff, RefreshCw, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, ApiError, useApi, useAction, openFile } from '@/lib/api';
-import { PageHeader, StatCard, DataTable, Field } from '@/components/common/page';
+import { PageHeader, StatCard, DataTable, Field, useDemoMode } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { CameraScanButton } from '@/components/common/camera-scanner';
 import { Input, Select } from '@/components/ui/input';
@@ -41,7 +41,8 @@ export default function PDV() {
   const [results, setResults] = useState<any[]>([]);
   const [discount, setDiscount] = useState(0);
   const [doc, setDoc] = useState('');
-  const [pay, setPay] = useState<{ method: string; amount: string; installments: number }[]>([]);
+  const [pay, setPay] = useState<{ method: string; amount: string; installments: number; nsu?: string; authCode?: string }[]>([]);
+  const demoMode = useDemoMode();
   const [cash, setCash] = useState<{ action: string } | null>(null);
   const [cashAmount, setCashAmount] = useState('');
   const [done, setDone] = useState<any>(null);
@@ -109,7 +110,7 @@ export default function PDV() {
   };
   const finish = async () => {
     if (!cart.length) return toast.error('Carrinho vazio');
-    const payments = pay.length ? pay.map((p) => ({ method: p.method, amount: Number(p.amount), installments: p.installments })) : [{ method: 'DINHEIRO', amount: total }];
+    const payments = pay.length ? pay.map((p) => ({ method: p.method, amount: Number(p.amount), installments: p.installments, nsu: p.nsu || undefined, authCode: p.authCode || undefined })) : [{ method: 'DINHEIRO', amount: total }];
     const payload = { items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.price, discount: i.discount })), discount, payments, customerDoc: doc, warehouseId: wh };
     if (typeof navigator !== 'undefined' && navigator.onLine === false) return enqueueOffline(payload);
     try {
@@ -264,11 +265,17 @@ export default function PDV() {
               <div className="grid grid-cols-4 gap-2">{METHODS.map((m) => <button key={m.key} onClick={() => addPay(m.key)} className="flex flex-col items-center gap-1 rounded-md border py-2 text-xs hover:border-primary hover:bg-accent"><m.icon className="h-5 w-5" />{m.label}</button>)}</div>
             </div>
             {pay.map((p, i) => (
-              <div key={i} className="flex items-center gap-2 text-sm">
+              <div key={i} className="flex flex-wrap items-center gap-2 text-sm">
                 <span className="w-24">{PAYMENT_METHODS[p.method]}</span>
                 <Input type="number" step="0.01" className="h-8" value={p.amount} onChange={(e) => setPay(pay.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))} />
                 {p.method === 'CARTAO_CREDITO' && <Select className="h-8 w-20" value={p.installments} onChange={(e) => setPay(pay.map((x, j) => (j === i ? { ...x, installments: Number(e.target.value) } : x)))}>{[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}x</option>)}</Select>}
                 <Button size="icon" variant="ghost" onClick={() => setPay(pay.filter((_, j) => j !== i))}><Trash2 /></Button>
+                {!demoMode && ['CARTAO_CREDITO', 'CARTAO_DEBITO'].includes(p.method) && (
+                  <div className="basis-full flex gap-2 pl-24">
+                    <Input className="h-7 text-xs" placeholder="NSU (opcional)" value={p.nsu || ''} onChange={(e) => setPay(pay.map((x, j) => (j === i ? { ...x, nsu: e.target.value } : x)))} />
+                    <Input className="h-7 text-xs" placeholder="Autorização (opcional)" value={p.authCode || ''} onChange={(e) => setPay(pay.map((x, j) => (j === i ? { ...x, authCode: e.target.value } : x)))} />
+                  </div>
+                )}
               </div>
             ))}
             <div className="space-y-1 rounded-md bg-muted/50 p-3 text-sm">
@@ -277,7 +284,7 @@ export default function PDV() {
               <div className="flex justify-between text-base font-bold"><span>Troco</span><span className="text-green-700">{money(change)}</span></div>
             </div>
             <Button className="h-12 w-full text-base" disabled={!cart.length || (pay.length > 0 && missing > 0)} onClick={finish}>Finalizar venda (F9)</Button>
-            <p className="text-center text-[11px] text-muted-foreground">Emite NFC-e (simulada), baixa o estoque e lança no caixa/financeiro automaticamente. Cartões passam na maquininha POS simulada.</p>
+            <p className="text-center text-[11px] text-muted-foreground">{demoMode ? 'Emite NFC-e (simulada), baixa o estoque e lança no caixa/financeiro automaticamente. Cartões passam na maquininha POS simulada.' : 'Emite a NFC-e (com emissor fiscal configurado), baixa o estoque e lança no caixa/financeiro. Cartões: passe na maquininha e, se quiser, informe NSU e autorização do comprovante.'}</p>
           </CardContent>
         </Card>
       </div>
@@ -286,7 +293,7 @@ export default function PDV() {
           <div className="text-sm text-muted-foreground">Pedido nº {done.order?.number}</div>
           <div className="text-3xl font-bold">{money(done.order?.total)}</div>
           {done.change > 0 && <div className="rounded-md bg-green-50 p-3 text-lg font-bold text-green-700">Troco: {money(done.change)}</div>}
-          {done.invoice ? <div className={cn('text-sm', done.invoice.status === 'AUTORIZADA' ? 'text-green-700' : 'text-red-600')}>NFC-e nº {done.invoice.number} — {done.invoice.status}{done.invoice.rejectionReason ? `: ${done.invoice.rejectionReason}` : ''}</div> : <div className="text-xs text-muted-foreground">Venda sem documento fiscal (automação de NFC-e desativada)</div>}
+          {done.invoice ? <div className={cn('text-sm', done.invoice.status === 'AUTORIZADA' ? 'text-green-700' : 'text-red-600')}>NFC-e nº {done.invoice.number} — {done.invoice.status}{done.invoice.rejectionReason ? `: ${done.invoice.rejectionReason}` : ''}</div> : <div className="text-xs text-muted-foreground">Venda sem documento fiscal (automação de NFC-e desativada ou nenhum emissor fiscal configurado)</div>}
         </div>}
       </Dialog>
       <Dialog open={!!cash} onOpenChange={(o) => !o && setCash(null)} title={cash?.action === 'close' ? 'Fechamento de caixa' : cash?.action === 'sangria' ? 'Sangria' : 'Suprimento'} size="sm" footer={<Button onClick={async () => { const r = await act('POST', '/api/pdv', { action: cash!.action, amount: Number(cashAmount) }, cash!.action === 'close' ? 'Caixa fechado' : 'Movimento registrado'); if (r) { setCash(null); setCashAmount(''); } }}>Confirmar</Button>}>

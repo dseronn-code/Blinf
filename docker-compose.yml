@@ -32,7 +32,7 @@ services:
       # Opcional: assistente de IA com Claude (sem a chave usa o motor local)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # true = webhooks nunca chamam URLs externas (entregas simuladas)
-      WEBHOOKS_SIMULATE_ONLY: ${WEBHOOKS_SIMULATE_ONLY:-true}
+      WEBHOOKS_SIMULATE_ONLY: ${WEBHOOKS_SIMULATE_ONLY:-false}
       # E-mail real (opcional). Sem SMTP_HOST, mensagens ficam na caixa de saída como SIMULADO
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}

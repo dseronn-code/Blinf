@@ -84,14 +84,16 @@ export default function Storefront() {
           <p className="mt-1 text-gray-600">Pedido nº {done.order.number} ({done.order.externalId}) · {money(done.order.total)}</p>
           {done.payment.status === 'APROVADO' ? <p className="mt-4 rounded bg-green-50 p-3 text-green-800">Pagamento aprovado no cartão. Você receberá o código de rastreio por e-mail.</p> : (
             <div className="mt-4 space-y-3 rounded-xl border bg-white p-4">
-              {done.payment.method === 'PIX' && <><img src={`/api/public/qr?data=${encodeURIComponent(done.payment.pix)}`} className="mx-auto h-44 w-44" alt="Pix" /><button className="w-full break-all rounded bg-gray-100 p-2 font-mono text-[10px]" onClick={() => { navigator.clipboard.writeText(done.payment.pix); toast.success('Copiado'); }}>{done.payment.pix}</button></>}
-              <a href={done.payment.link} target="_blank" className="block rounded-lg py-3 font-semibold text-white" style={{ background: primary }}>{done.payment.simulated === false || done.payment.redirectUrl ? (done.payment.method === 'PIX' ? 'Abrir página de pagamento' : done.payment.method === 'BOLETO' ? 'Ver boleto' : 'Pagar com cartão') : done.payment.method === 'PIX' ? 'Já paguei / simular pagamento' : 'Ver boleto e simular pagamento'}</a>
+              {done.payment.manual && <p className="text-sm text-gray-600">Pague com o Pix abaixo. A loja confere o recebimento e confirma o seu pedido.</p>}
+              {done.payment.failed && !done.payment.pix && <p className="text-sm text-gray-600">Não foi possível gerar a cobrança agora. A loja entrará em contato para concluir o pagamento.</p>}
+              {done.payment.method === 'PIX' && done.payment.pix && <><img src={`/api/public/qr?data=${encodeURIComponent(done.payment.pix)}`} className="mx-auto h-44 w-44" alt="Pix" /><button className="w-full break-all rounded bg-gray-100 p-2 font-mono text-[10px]" onClick={() => { navigator.clipboard.writeText(done.payment.pix); toast.success('Copiado'); }}>{done.payment.pix}</button></>}
+              {!done.payment.manual && !done.payment.failed && <a href={done.payment.link} target="_blank" className="block rounded-lg py-3 font-semibold text-white" style={{ background: primary }}>{done.payment.simulated === false || done.payment.redirectUrl ? (done.payment.method === 'PIX' ? 'Abrir página de pagamento' : done.payment.method === 'BOLETO' ? 'Ver boleto' : 'Pagar com cartão') : done.payment.method === 'PIX' ? 'Já paguei / simular pagamento' : 'Ver boleto e simular pagamento'}</a>}
             </div>
           )}
           <button className="mt-6 text-sm underline" onClick={() => { setDone(null); setCheckout(false); }}>Continuar comprando</button>
         </div>
       ) : checkout ? (
-        <Checkout slug={slug} store={st} cart={cart} onDone={(r) => { setDone(r); setCart([]); }} onBack={() => setCheckout(false)} />
+        <Checkout slug={slug} store={st} payments={data.payments} cart={cart} onDone={(r) => { setDone(r); setCart([]); }} onBack={() => setCheckout(false)} />
       ) : (
         <main>
           {sections.map((s) => {
@@ -102,7 +104,7 @@ export default function Storefront() {
             if (s === 'sobre' && st.aboutText) return <section key={s} className="mx-auto max-w-3xl px-4 py-12 text-center"><h2 className="mb-2 text-xl font-bold">Sobre a {st.name}</h2><p className="text-gray-600">{st.aboutText}</p></section>;
             return null;
           })}
-          <footer className="mt-10 border-t bg-white py-8 text-center text-xs text-gray-500"><div className="mb-2 flex justify-center gap-6"><span><ShieldCheck className="mr-1 inline h-4 w-4" /> Compra segura</span><span><Truck className="mr-1 inline h-4 w-4" /> Entrega para todo o Brasil</span><span><QrCode className="mr-1 inline h-4 w-4" /> Pix com desconto</span></div>{data.company.name} · CNPJ {data.company.cnpj} · {data.company.city}/{data.company.uf}<div className="mt-1">Loja de demonstração GestãoPro — pagamentos simulados</div></footer>
+          <footer className="mt-10 border-t bg-white py-8 text-center text-xs text-gray-500"><div className="mb-2 flex justify-center gap-6"><span><ShieldCheck className="mr-1 inline h-4 w-4" /> Compra segura</span><span><Truck className="mr-1 inline h-4 w-4" /> Entrega para todo o Brasil</span><span><QrCode className="mr-1 inline h-4 w-4" /> Pix com desconto</span></div>{data.company.name} · CNPJ {data.company.cnpj} · {data.company.city}/{data.company.uf}{data.payments?.demo && <div className="mt-1">Loja de demonstração GestãoPro — pagamentos simulados</div>}</footer>
           {st.whatsapp && <a href={`https://wa.me/55${onlyDigits(st.whatsapp)}`} target="_blank" className="fixed bottom-5 right-5 rounded-full bg-green-500 p-3 text-white shadow-lg"><MessageCircle className="h-6 w-6" /></a>}
         </main>
       )}
@@ -165,11 +167,13 @@ function ProductModal({ p, store, onClose, onAdd }: { p: Product; store: any; on
   );
 }
 
-function Checkout({ slug, store, cart, onDone, onBack }: { slug: string; store: any; cart: CartLine[]; onDone: (r: any) => void; onBack: () => void }) {
+function Checkout({ slug, store, payments, cart, onDone, onBack }: { slug: string; store: any; payments?: { pix: boolean; boleto: boolean; card: boolean; demo: boolean; gateway: boolean; manualPix: boolean }; cart: CartLine[]; onDone: (r: any) => void; onBack: () => void }) {
+  // Formas de pagamento habilitadas (cartão/boleto só com provedor de pagamento conectado)
+  const methods = ([['PIX', `Pix (-${store.pixDiscount}%)`], ['BOLETO', 'Boleto'], ['CARTAO_CREDITO', 'Cartão']] as const).filter(([k]) => !payments || (k === 'PIX' ? payments.pix : k === 'BOLETO' ? payments.boleto : payments.card));
   const [c, setC] = useState<any>({ name: '', email: '', document: '', phone: '', zip: '', street: '', number: '', complement: '', district: '', city: '', uf: '' });
   const [opts, setOpts] = useState<any[]>([]);
   const [ship, setShip] = useState<any>(null);
-  const [method, setMethod] = useState<'PIX' | 'BOLETO' | 'CARTAO_CREDITO'>('PIX');
+  const [method, setMethod] = useState<'PIX' | 'BOLETO' | 'CARTAO_CREDITO'>(methods[0]?.[0] || 'PIX');
   const [busy, setBusy] = useState(false);
   const [couponInput, setCouponInput] = useState('');
   const [coupon, setCoupon] = useState<{ code: string; type: string; discount: number; freeShipping: boolean } | null>(null);
@@ -219,10 +223,12 @@ function Checkout({ slug, store, cart, onDone, onBack }: { slug: string; store: 
         <button onClick={onBack} className="text-sm underline">← Voltar para a loja</button>
         <div className="rounded-xl border bg-white p-4"><h3 className="mb-3 font-bold">1. Identificação</h3><div className="grid grid-cols-2 gap-2">{inp('name', 'Nome completo', 'col-span-2')}{inp('email', 'E-mail')}{inp('document', 'CPF (ex.: 529.982.247-25)')}{inp('phone', 'Celular')}</div></div>
         <div className="rounded-xl border bg-white p-4"><h3 className="mb-3 font-bold">2. Entrega</h3><div className="grid grid-cols-3 gap-2">{inp('zip', 'CEP')}<button onClick={quote} className="rounded-lg border text-sm">Calcular frete</button><span />{inp('street', 'Endereço', 'col-span-2')}{inp('number', 'Número')}{inp('complement', 'Complemento')}{inp('district', 'Bairro')}{inp('city', 'Cidade')}{inp('uf', 'UF')}</div>
-          {opts.length > 0 && <div className="mt-3 space-y-2">{opts.map((o) => <label key={o.service} className={cn('flex cursor-pointer items-center justify-between rounded-lg border p-3 text-sm', ship?.service === o.service && 'border-2')} style={ship?.service === o.service ? { borderColor: store.primaryColor } : {}}><span><input type="radio" className="mr-2" checked={ship?.service === o.service} onChange={() => setShip(o)} />{o.carrier} {o.service} · {o.deadlineDays} dias úteis</span><b>{o.free ? 'Grátis' : money(o.price)}</b></label>)}</div>}
+          {opts.length > 0 && <div className="mt-3 space-y-2">{opts.map((o) => <label key={o.service} className={cn('flex cursor-pointer items-center justify-between rounded-lg border p-3 text-sm', ship?.service === o.service && 'border-2')} style={ship?.service === o.service ? { borderColor: store.primaryColor } : {}}><span><input type="radio" className="mr-2" checked={ship?.service === o.service} onChange={() => setShip(o)} />{o.manual ? o.service : `${o.carrier} ${o.service} · ${o.deadlineDays} dias úteis`}</span><b>{o.free ? 'Grátis' : o.service === 'Frete a combinar' ? 'a combinar' : money(o.price)}</b></label>)}</div>}
         </div>
-        <div className="rounded-xl border bg-white p-4"><h3 className="mb-3 font-bold">3. Pagamento</h3><div className="grid grid-cols-3 gap-2">{([['PIX', `Pix (-${store.pixDiscount}%)`], ['BOLETO', 'Boleto'], ['CARTAO_CREDITO', 'Cartão']] as const).map(([k, l]) => <button key={k} onClick={() => setMethod(k)} className={cn('rounded-lg border p-3 text-sm', method === k && 'border-2 font-semibold')} style={method === k ? { borderColor: store.primaryColor } : {}}>{l}</button>)}</div>
-          {method === 'CARTAO_CREDITO' && <div className="mt-3 grid grid-cols-3 gap-2"><input className="col-span-3 h-10 rounded-lg border px-3 text-sm" defaultValue="4111 1111 1111 1111" /><input className="h-10 rounded-lg border px-3 text-sm" defaultValue="12/30" /><input className="h-10 rounded-lg border px-3 text-sm" defaultValue="123" /><span className="self-center text-xs text-gray-500">cartão de teste</span></div>}
+        <div className="rounded-xl border bg-white p-4"><h3 className="mb-3 font-bold">3. Pagamento</h3>{!methods.length && <p className="text-sm text-gray-600">Pagamento online indisponível no momento — entre em contato com a loja.</p>}<div className="grid grid-cols-3 gap-2">{methods.map(([k, l]) => <button key={k} onClick={() => setMethod(k)} className={cn('rounded-lg border p-3 text-sm', method === k && 'border-2 font-semibold')} style={method === k ? { borderColor: store.primaryColor } : {}}>{l}</button>)}</div>
+          {method === 'CARTAO_CREDITO' && payments && !payments.demo && <p className="mt-3 text-xs text-gray-500">Você será direcionado à página segura de pagamento para informar o cartão.</p>}
+          {method === 'PIX' && payments?.manualPix && <p className="mt-3 text-xs text-gray-500">O código Pix aparece após confirmar o pedido; a loja confere o recebimento.</p>}
+          {method === 'CARTAO_CREDITO' && (!payments || payments.demo) && <div className="mt-3 grid grid-cols-3 gap-2"><input className="col-span-3 h-10 rounded-lg border px-3 text-sm" defaultValue="4111 1111 1111 1111" /><input className="h-10 rounded-lg border px-3 text-sm" defaultValue="12/30" /><input className="h-10 rounded-lg border px-3 text-sm" defaultValue="123" /><span className="self-center text-xs text-gray-500">cartão de teste</span></div>}
         </div>
       </div>
       <div className="h-fit space-y-2 rounded-xl border bg-white p-4 text-sm">
@@ -231,7 +237,7 @@ function Checkout({ slug, store, cart, onDone, onBack }: { slug: string; store: 
         <div className="flex justify-between border-t pt-2"><span>Subtotal</span><span>{money(subtotal)}</span></div>
         {discount > 0 && <div className="flex justify-between text-green-700"><span>Desconto Pix</span><span>-{money(discount)}</span></div>}
         {coupon && couponDiscount > 0 && <div className="flex justify-between text-green-700"><span>Cupom {coupon.code}</span><span>-{money(couponDiscount)}</span></div>}
-        <div className="flex justify-between"><span>Frete</span><span>{ship ? (freight ? money(freight) : <span className="text-green-700">Grátis{coupon?.freeShipping && ship.price ? ' (cupom)' : ''}</span>) : coupon?.freeShipping ? <span className="text-green-700">Grátis (cupom)</span> : '—'}</span></div>
+        <div className="flex justify-between"><span>Frete</span><span>{ship ? (freight ? money(freight) : ship.service === 'Frete a combinar' && !coupon?.freeShipping ? 'a combinar' : <span className="text-green-700">Grátis{coupon?.freeShipping && ship.price ? ' (cupom)' : ''}</span>) : coupon?.freeShipping ? <span className="text-green-700">Grátis (cupom)</span> : '—'}</span></div>
         <div className="border-t pt-2">
           {coupon ? (
             <div className="flex items-center justify-between rounded-lg bg-green-50 px-3 py-2 text-xs text-green-800"><span><Tag className="mr-1 inline h-3.5 w-3.5" />Cupom <b>{coupon.code}</b> aplicado{coupon.freeShipping ? ' · frete grátis' : ''}</span><button onClick={() => { setCoupon(null); setCouponInput(''); }} className="underline">remover</button></div>
@@ -240,7 +246,7 @@ function Checkout({ slug, store, cart, onDone, onBack }: { slug: string; store: 
           )}
         </div>
         <div className="flex justify-between border-t pt-2 text-lg font-bold"><span>Total</span><span>{money(total)}</span></div>
-        <button disabled={busy || !ship} onClick={submit} className="w-full rounded-lg py-3 font-semibold text-white disabled:opacity-50" style={{ background: store.primaryColor }}>{busy ? 'Processando…' : 'Confirmar pedido'}</button>
+        <button disabled={busy || !ship || !methods.length} onClick={submit} className="w-full rounded-lg py-3 font-semibold text-white disabled:opacity-50" style={{ background: store.primaryColor }}>{busy ? 'Processando…' : 'Confirmar pedido'}</button>
         {!ship && <p className="text-center text-xs text-gray-500">Informe o CEP para calcular o frete</p>}
       </div>
     </div>

@@ -113,6 +113,7 @@ export default function StoreEditor() {
                 {UFS.map((u) => <Checkbox key={u} label={u} className="text-xs" checked={ufs.includes(u)} onChange={(e) => set('freeShippingUfs', e.target.checked ? [...ufs, u] : ufs.filter((x: string) => x !== u))} />)}
               </div>
             </Field>
+            <p className="col-span-2 text-xs text-muted-foreground"><b>Entrega e pagamento:</b> com Melhor Envio/Correios conectados (Integrações → Contas e credenciais) o checkout mostra as cotações reais; sem eles, oferece entrega com frete fixo (variável de ambiente <code>STORE_FIXED_FREIGHT</code>) ou &quot;frete a combinar&quot;, além de retirada no local. Cartão e boleto exigem Asaas ou Mercado Pago conectados; sem provedor, só Pix pela chave cadastrada na conta bancária (baixa manual em Financeiro).</p>
           </CardContent></Card>
           <Card><CardHeader><CardTitle className="flex items-center gap-2"><Globe className="h-4 w-4" /> Domínio próprio</CardTitle></CardHeader><CardContent className="space-y-2">
             <Field label="Domínio" hint="Sem http:// — ex.: www.minhaloja.com.br"><Input value={s.customDomain || ''} onChange={(e) => set('customDomain', e.target.value)} placeholder="www.minhaloja.com.br" /></Field>

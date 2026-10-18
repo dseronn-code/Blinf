@@ -1,15 +1,24 @@
 /**
  * Loja virtual nativa: catálogo público com estoque/preço do ERP e
  * checkout que gera cliente + pedido (origem LOJA) + cobrança.
+ *
+ * Produção (fora do modo demonstração) — nada é inventado:
+ * - Frete: opções reais (Melhor Envio/Correios conectados) + "Retirada no local" (R$ 0).
+ *   Sem provedor real, a entrega é "frete fixo" com o valor da variável de ambiente
+ *   STORE_FIXED_FREIGHT (ex.: "19.90") ou, sem ela, "frete a combinar" (R$ 0 no checkout;
+ *   a loja combina o valor com o cliente). Frete grátis (valor mínimo/UFs) vale para a entrega.
+ * - Pagamento: cartão e boleto só com provedor conectado (Asaas/Mercado Pago); sem provedor,
+ *   apenas Pix estático da chave cadastrada na conta bancária da empresa, com baixa manual.
  */
 import crypto from 'crypto';
 import { prisma } from '@/lib/db';
 import { round2, onlyDigits, randomDigits, addDays } from '@/lib/utils';
+import { isDemoMode } from '@/lib/demo';
 import { isValidCPF, isValidCNPJ, buildPixPayload } from '@/lib/br';
 import { fail } from '../errors';
 import { getAvailability } from './stock';
 import { resolvePrice, createOrder } from './sales';
-import { quoteFreightFor } from './logistics';
+import { quoteFreightFor, MANUAL_PROVIDER, type FreightOption } from './logistics';
 import { defaultBankAccount } from './finance';
 import { evaluateCoupon } from './operations';
 import { paymentAccount, createCharge } from './payments';
@@ -21,6 +30,25 @@ export async function storeBySlug(slug: string) {
   if (!store) fail(404, 'Loja não encontrada');
   const company = await prisma.company.findUnique({ where: { id: store!.companyId } });
   return { store: store!, company: company! };
+}
+
+/** Conta com chave Pix cadastrada (Pix estático com baixa manual quando não há provedor de pagamento) */
+async function pixKeyAccount(companyId: string) {
+  return prisma.bankAccount.findFirst({ where: { companyId, active: true, pixKey: { not: null } }, orderBy: { isDefault: 'desc' } });
+}
+
+/** Formas de pagamento disponíveis na loja (cartão/boleto só com provedor real fora do modo demonstração) */
+export async function storePaymentMethods(companyId: string) {
+  const demo = isDemoMode();
+  const gateway = await paymentAccount(companyId);
+  const pixKey = !!(await pixKeyAccount(companyId))?.pixKey;
+  return { gateway: !!gateway, demo, pix: demo || !!gateway || pixKey, boleto: demo || !!gateway, card: demo || !!gateway, manualPix: !demo && !gateway && pixKey };
+}
+
+/** Frete fixo da loja sem provedor real (variável STORE_FIXED_FREIGHT); null = frete a combinar */
+export function storeFixedFreight() {
+  const v = Number(String(process.env.STORE_FIXED_FREIGHT || '').replace(',', '.'));
+  return v > 0 ? round2(v) : null;
 }
 
 export async function storeCatalog(slug: string) {
@@ -42,7 +70,7 @@ export async function storeCatalog(slug: string) {
     });
   }
   const categories = [...new Map(out.filter((p) => p.category).map((p) => [p.category!.id, p.category!])).values()];
-  return { store, company: { name: company.tradeName || company.name, city: company.city, uf: company.uf, cnpj: company.cnpj, phone: company.phone, email: company.email }, products: out.filter((p) => p.price > 0), categories };
+  return { store, company: { name: company.tradeName || company.name, city: company.city, uf: company.uf, cnpj: company.cnpj, phone: company.phone, email: company.email }, products: out.filter((p) => p.price > 0), categories, payments: await storePaymentMethods(company.id) };
 }
 
 export async function storeFreight(slug: string, zip: string, items: { productId: string; quantity: number }[], uf?: string) {
@@ -50,8 +78,14 @@ export async function storeFreight(slug: string, zip: string, items: { productId
   const products = await prisma.product.findMany({ where: { id: { in: items.map((i) => i.productId) } } });
   const weight = items.reduce((a, i) => a + (products.find((p) => p.id === i.productId)?.weight || 0.3) * i.quantity, 0);
   const subtotal = (await Promise.all(items.map(async (i) => (await resolvePrice(prisma, i.productId, store.priceListId)) * i.quantity))).reduce((a, b) => a + b, 0);
-  // Frete real (Melhor Envio/Correios conectados) ou simulado; na simulação, só os serviços mais comuns
-  const options = (await quoteFreightFor(company.id, { fromZip: company.zip || '', toZip: zip, weight, value: subtotal })).filter((o) => !o.simulated || (['PAC', 'SEDEX', '.Package', 'Loggi Express'].some((s) => o.service.startsWith(s)) && o.provider !== 'GESTAO_ENVIOS'));
+  // Frete real (Melhor Envio/Correios conectados) ou simulado (só demonstração); na simulação, só os serviços mais comuns
+  let options: FreightOption[] = (await quoteFreightFor(company.id, { fromZip: company.zip || '', toZip: zip, weight, value: subtotal })).filter((o) => !o.simulated || (['PAC', 'SEDEX', '.Package', 'Loggi Express'].some((s) => o.service.startsWith(s)) && o.provider !== 'GESTAO_ENVIOS'));
+  if (!isDemoMode()) {
+    // Produção: sem provedor real → frete fixo (STORE_FIXED_FREIGHT) ou a combinar; retirada sempre disponível
+    const fixed = storeFixedFreight();
+    if (!options.length) options = [{ provider: MANUAL_PROVIDER, carrier: 'Entrega', service: fixed != null ? 'Frete fixo' : 'Frete a combinar', price: fixed ?? 0, deadlineDays: 0, simulated: false, manual: true }];
+    options = [...options, { provider: MANUAL_PROVIDER, carrier: 'Retirada', service: 'Retirada no local', price: 0, deadlineDays: 0, simulated: false, manual: true }];
+  }
   const free = (store.freeShippingAbove > 0 && subtotal >= store.freeShippingAbove) || (!!uf && store.freeShippingUfs.includes(uf.toUpperCase()));
   return options.map((o, i) => ({ ...o, price: free && i === 0 ? 0 : o.price, free: free && i === 0 }));
 }
@@ -93,14 +127,21 @@ export async function storeCheckout(slug: string, input: CheckoutInput) {
   const options = await storeFreight(slug, addr.zip, input.items, addr.uf);
   const chosen = options.find((o) => o.service === input.shipping?.service) || options[0];
   const freight = coupon?.freeShipping ? 0 : round2(chosen?.price || 0);
-  // Asaas/Mercado Pago conectado: Pix, boleto e cartão são cobrados de verdade; sem provedor, cartão é aprovado na hora (simulado)
+  // Asaas/Mercado Pago conectado: Pix, boleto e cartão são cobrados de verdade.
+  // Sem provedor: na demonstração o cartão é aprovado na hora (simulado); em produção só Pix estático (baixa manual)
   const gateway = await paymentAccount(company.id);
-  const cardNow = input.paymentMethod === 'CARTAO_CREDITO' && !gateway;
+  const demo = isDemoMode();
+  const pixAccount = !gateway && !demo ? await pixKeyAccount(company.id) : null;
+  if (!gateway && !demo) {
+    if (input.paymentMethod !== 'PIX') fail(400, `${input.paymentMethod === 'BOLETO' ? 'Boleto' : 'Cartão'} indisponível nesta loja no momento — escolha Pix.`);
+    if (!pixAccount?.pixKey) fail(400, 'Pagamento online indisponível nesta loja no momento. Entre em contato com a loja.');
+  }
+  const cardNow = input.paymentMethod === 'CARTAO_CREDITO' && !gateway && demo;
   const order = await createOrder(actor, {
     customerId: contact.id, origin: 'LOJA', externalId: `LV-${randomDigits(6)}`, items, discount, freight, shippingService: chosen?.service,
     paymentMethod: input.paymentMethod, installments: input.paymentMethod === 'CARTAO_CREDITO' ? input.installments || 1 : 1, paymentTermDays: input.paymentMethod === 'BOLETO' ? 3 : 0,
     // Cartão simulado é aprovado na hora; Pix/boleto (e cartão real) aguardam pagamento
-    paidOnCreate: cardNow, warehouseId: store.warehouseId, shipTo: { name: c.name, ...addr }, notes: 'Pedido da loja virtual',
+    paidOnCreate: cardNow, warehouseId: store.warehouseId, shipTo: { name: c.name, ...addr }, notes: chosen?.service === 'Frete a combinar' ? 'Pedido da loja virtual — frete a combinar com o cliente' : 'Pedido da loja virtual',
   });
   if (coupon) {
     await prisma.coupon.update({ where: { id: coupon.coupon.id }, data: { uses: { increment: 1 } } });
@@ -109,14 +150,17 @@ export async function storeCheckout(slug: string, input: CheckoutInput) {
   // Recebível + link de pagamento (o pagamento — real via webhook ou simulado — baixa a conta)
   let payment: Record<string, unknown> = { method: input.paymentMethod, status: cardNow ? 'APROVADO' : 'AGUARDANDO' };
   if (!cardNow) {
-    const bank = await defaultBankAccount(prisma, company.id, 'CONTA_DIGITAL');
+    const bank = pixAccount || (await defaultBankAccount(prisma, company.id, 'CONTA_DIGITAL'));
     const entry = await prisma.financialEntry.create({ data: { companyId: company.id, type: 'RECEBER', description: `Loja virtual - pedido nº ${order.number}`, contactId: contact.id, contactName: contact.name, dueDate: addDays(new Date(), input.paymentMethod === 'BOLETO' ? 3 : 1), amount: order.total, origin: 'LOJA', originId: order.id, paymentMethod: input.paymentMethod, chartAccountId: (await prisma.chartAccount.findFirst({ where: { companyId: company.id, code: '1.1.03' } }))?.id, documentNumber: String(order.number) } });
     await prisma.salesOrder.update({ where: { id: order.id }, data: { financialPosted: true } });
     const slugLink = `pg${randomDigits(10)}`;
-    let pix = buildPixPayload({ key: bank?.pixKey || company.cnpj, name: company.tradeName || company.name, city: company.city || 'SAO PAULO', amount: order.total, txid: slugLink });
+    // Chave Pix: a cadastrada na conta bancária (o CNPJ como chave só é presumido na demonstração)
+    const pixKey = bank?.pixKey || (demo ? company.cnpj : null);
+    let pix: string | null = pixKey ? buildPixPayload({ key: pixKey, name: company.tradeName || company.name, city: company.city || 'SAO PAULO', amount: order.total, txid: slugLink }) : null;
     const method = input.paymentMethod === 'PIX' ? 'PIX' : input.paymentMethod === 'BOLETO' ? 'BOLETO' : 'CARTAO';
     const link = await prisma.paymentLink.create({ data: { companyId: company.id, slug: slugLink, description: `Pedido ${order.number} - ${store.name}`, amount: order.total, methods: method, entryId: entry.id, salesOrderId: order.id, customerName: contact.name, pixPayload: pix, expiresAt: entry.dueDate } });
-    payment = { ...payment, link: `/pagar/${slugLink}`, pix, entryId: entry.id, simulated: !gateway };
+    // manual: Pix estático da chave da empresa — a loja confere o recebimento e dá baixa manualmente
+    payment = { ...payment, link: `/pagar/${slugLink}`, pix, entryId: entry.id, simulated: !gateway && demo, manual: !gateway && !demo };
     if (gateway) {
       try {
         const r = await createCharge(company.id, entry.id, method, { backUrl: `${appUrl()}/pagar/${slugLink}` });
@@ -127,9 +171,10 @@ export async function storeCheckout(slug: string, input: CheckoutInput) {
         const redirectUrl = 'redirectUrl' in r ? r.redirectUrl : null;
         payment = { ...payment, pix, provider: r.entry.provider, boletoLine: r.entry.boletoLine, paymentUrl: r.entry.paymentUrl, redirectUrl, ...(method === 'CARTAO' && redirectUrl ? { link: redirectUrl } : {}) };
       } catch (e) {
-        // Falha no provedor não perde o pedido: segue com a cobrança simulada e avisa a empresa
-        payment = { ...payment, simulated: true };
-        await notify(company.id, 'Falha ao emitir cobrança da loja', `Pedido ${order.number}: ${(e as Error).message}. Cobrança simulada mantida.`, { level: 'error', link: '/financeiro/cobrancas' });
+        // Falha no provedor não perde o pedido: avisa a empresa (na demonstração segue com a cobrança simulada;
+        // em produção o pedido fica aguardando pagamento — a loja combina a cobrança com o cliente)
+        payment = demo ? { ...payment, simulated: true } : { ...payment, simulated: false, failed: true, manual: !!pix };
+        await notify(company.id, 'Falha ao emitir cobrança da loja', `Pedido ${order.number}: ${(e as Error).message}. ${demo ? 'Cobrança simulada mantida.' : 'Pedido aguardando pagamento — emita a cobrança em Financeiro → Cobranças ou contate o cliente.'}`, { level: 'error', link: '/financeiro/cobrancas' });
       }
     }
   }

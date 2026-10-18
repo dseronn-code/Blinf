@@ -2,7 +2,8 @@ import { prisma } from '@/lib/db';
 import { route, fileResponse } from '@/server/http';
 import { fail } from '@/server/errors';
 import { randomDigits } from '@/lib/utils';
-import { payEntry, billingData, defaultBankAccount } from '@/server/services/finance';
+import { payEntry, billingData, defaultBankAccount, realPixKey, PAYMENT_HOWTO } from '@/server/services/finance';
+import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
 import { boletoPdf } from '@/server/pdf';
 import { buildPixPayload } from '@/lib/br';
 import { createCharge, cancelCharge, refundCharge, paymentAccount, type ChargeMethod } from '@/server/services/payments';
@@ -39,7 +40,8 @@ export const POST = route('financeiro', 'edit', async ({ ctx, params, body }) =>
     case 'refund-charge':
       return refundCharge(ctx.companyId, e!.id, body?.amount ? Number(body.amount) : undefined);
     case 'billing': {
-      if (await paymentAccount(ctx.companyId)) return (await createCharge(ctx.companyId, e!.id)).entry;
+      // Provedor conectado (ou produção: sem boleto inventado — createCharge recusa ou gera só o Pix estático)
+      if (!isDemoMode() || (await paymentAccount(ctx.companyId))) return (await createCharge(ctx.companyId, e!.id)).entry;
       // Gera (ou regenera) boleto + Pix para o título
       const company = await prisma.company.findUnique({ where: { id: ctx.companyId } });
       const bank = await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL');
@@ -50,7 +52,9 @@ export const POST = route('financeiro', 'edit', async ({ ctx, params, body }) =>
       const bank = await defaultBankAccount(prisma, ctx.companyId, 'CONTA_DIGITAL');
       const slug = `pg${randomDigits(10)}`;
       const amount = e!.amount - e!.paidAmount;
-      return prisma.paymentLink.create({ data: { companyId: ctx.companyId, slug, description: e!.description, amount, entryId: e!.id, customerName: e!.contactName, methods: body?.methods || 'TODOS', expiresAt: e!.dueDate, pixPayload: buildPixPayload({ key: bank?.pixKey || company!.cnpj, name: company!.tradeName || company!.name, city: company!.city || 'SAO PAULO', amount, txid: slug }) } });
+      const pixKey = isDemoMode() ? bank?.pixKey || company!.cnpj : realPixKey(bank);
+      if (!pixKey && !(await paymentAccount(ctx.companyId))) requireRealOrDemo('Link de pagamento', `${PAYMENT_HOWTO} Ou cadastre a chave Pix da conta bancária em Finanças → Contas bancárias.`);
+      return prisma.paymentLink.create({ data: { companyId: ctx.companyId, slug, description: e!.description, amount, entryId: e!.id, customerName: e!.contactName, methods: body?.methods || 'TODOS', expiresAt: e!.dueDate, pixPayload: pixKey ? buildPixPayload({ key: pixKey, name: company!.tradeName || company!.name, city: company!.city || 'SAO PAULO', amount, txid: slug }) : null } });
     }
     default:
       fail(404, 'Ação inválida');
@@ -64,6 +68,8 @@ export const GET = route('financeiro', 'view', async ({ ctx, params }) => {
   if (!e) fail(404, 'Lançamento não encontrado');
   // Cobrança real: o boleto/fatura oficial fica no provedor
   if (e!.provider && e!.paymentUrl) return Response.redirect(e!.paymentUrl, 302);
+  // Boleto local (linha digitável inventada) só no modo demonstração
+  requireRealOrDemo('Boleto em PDF', `O boleto só existe registrado no provedor de cobrança. ${PAYMENT_HOWTO}`);
   const company = await prisma.company.findUnique({ where: { id: e!.companyId } });
   const bank = await defaultBankAccount(prisma, e!.companyId, 'CONTA_DIGITAL');
   if (!e!.boletoLine) e = await prisma.financialEntry.update({ where: { id: e!.id }, data: billingData(company!, bank!, e!.amount - e!.paidAmount, e!.dueDate) });

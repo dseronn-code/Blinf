@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { Download, Upload, Link2, Plus, EyeOff } from 'lucide-react';
 import { useApi, useAction } from '@/lib/api';
-import { PageHeader, Filters, DataTable, SimBanner } from '@/components/common/page';
+import { PageHeader, Filters, DataTable, SimBanner, useDemoMode } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -14,6 +14,7 @@ export default function Reconciliation() {
   const bankId = acc || banks?.rows.find((b: any) => b.isDefault)?.id || '';
   const { data, isLoading } = useApi<any>(bankId ? `/api/finance/reconcile?bankAccountId=${bankId}` : null);
   const act = useAction();
+  const demo = useDemoMode();
   const upload = async (f?: File) => {
     if (!f) return;
     const fd = new FormData();
@@ -25,7 +26,7 @@ export default function Reconciliation() {
   return (
     <div>
       <PageHeader title="Conciliação bancária" description="Importe o extrato OFX do banco e concilie cada transação com as contas a pagar/receber (sugestões por valor, data e nome)"
-        actions={<><Button variant="outline" onClick={() => window.open('/api/finance/ofx', '_blank')}><Download /> Gerar OFX de exemplo</Button><label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-medium text-white"><Upload className="h-4 w-4" /> Importar OFX<input type="file" accept=".ofx,.txt" className="hidden" onChange={(e) => upload(e.target.files?.[0])} /></label></>} />
+        actions={<>{demo && <Button variant="outline" onClick={() => window.open('/api/finance/ofx', '_blank')}><Download /> Gerar OFX de exemplo</Button>}<label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3.5 text-sm font-medium text-white"><Upload className="h-4 w-4" /> Importar OFX<input type="file" accept=".ofx,.txt" className="hidden" onChange={(e) => upload(e.target.files?.[0])} /></label></>} />
       <SimBanner>o OFX de exemplo contém transações que batem com títulos em aberto (para testar as sugestões), além de tarifa e rendimento sem título.</SimBanner>
       <Filters><Select className="w-64" value={bankId} onChange={(e) => setAcc(e.target.value)}>{banks?.rows.map((b: any) => <option key={b.id} value={b.id}>{b.name} {b.pending ? `(${b.pending} pendentes)` : ''}</option>)}</Select></Filters>
       <DataTable loading={isLoading} rows={data?.rows} empty="Nenhuma transação pendente de conciliação 🎉" columns={[

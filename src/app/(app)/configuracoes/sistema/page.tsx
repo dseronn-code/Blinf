@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { Play, RotateCcw, RefreshCw, Send, Activity, Database, ListChecks, AlertTriangle, Clock, Server } from 'lucide-react';
 import { useApi, useAction, qs } from '@/lib/api';
-import { PageHeader, DataTable, StatCard, Filters, SearchBox, KV } from '@/components/common/page';
+import { PageHeader, DataTable, StatCard, Filters, SearchBox, KV, useDemoMode } from '@/components/common/page';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog } from '@/components/ui/dialog';
@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { fmtDateTime } from '@/lib/utils';
 
-const OUT_TONE: Record<string, [string, string]> = { PENDENTE: ['Pendente', 'yellow'], ENVIADO: ['Enviado', 'green'], SIMULADO: ['Simulado', 'blue'], ERRO: ['Erro', 'red'] };
+const OUT_TONE: Record<string, [string, string]> = { PENDENTE: ['Pendente', 'yellow'], ENVIADO: ['Enviado', 'green'], SIMULADO: ['Simulado', 'blue'], NAO_ENVIADO: ['Não enviado', 'orange'], ERRO: ['Erro', 'red'] };
 const JOB_TONE: Record<string, [string, string]> = { PENDENTE: ['Pendente', 'yellow'], PROCESSANDO: ['Processando', 'blue'], CONCLUIDO: ['Concluído', 'green'], ERRO: ['Erro', 'red'] };
 const tone = (map: Record<string, [string, string]>, s: string) => <Badge tone={map[s]?.[1] || 'gray'}>{map[s]?.[0] || s}</Badge>;
 
@@ -56,6 +56,7 @@ function Outbox() {
   const [q, setQ] = useState('');
   const { data, isLoading } = useApi<any[]>(`/api/system/outbox${qs({ q })}`);
   const act = useAction();
+  const demo = useDemoMode();
   const [sel, setSel] = useState<any>(null);
   const resend = async (id: string) => {
     const r = await act('POST', '/api/system/outbox', { action: 'resend', id }, 'Mensagem reenviada para a fila');
@@ -65,8 +66,8 @@ function Outbox() {
     <>
       <div className="mb-3 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
         Todas as mensagens enviadas pelo sistema (NF-e, boletos, cobranças, convites, redefinição de senha…) ficam registradas aqui.
-        <b> E-mails</b> são enviados via SMTP quando a variável <code>SMTP_HOST</code> está configurada; caso contrário são registrados como <Badge tone="blue">Simulado</Badge>.
-        Mensagens de <b>WhatsApp</b> são sempre simuladas.
+        <b> E-mails</b> são enviados pelo SMTP configurado em Integrações → Contas e credenciais → SMTP (ou pela variável <code>SMTP_HOST</code>); <b>WhatsApp</b>, pela conta conectada em Integrações → Contas e credenciais → WhatsApp.
+        Sem o canal configurado, a mensagem fica {demo ? <Badge tone="blue">Simulado</Badge> : <Badge tone="orange">Não enviado</Badge>} com o motivo — configure e use &quot;Reenviar&quot;.
       </div>
       <Filters><SearchBox value={q} onChange={setQ} placeholder="Destinatário ou assunto…" /></Filters>
       <DataTable loading={isLoading} rows={data} onRowClick={setSel} empty="Nenhuma mensagem na caixa de saída" columns={[

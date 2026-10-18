@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { route, fileResponse } from '@/server/http';
 import { fail } from '@/server/errors';
+import { requireRealOrDemo } from '@/lib/demo';
 import { round2, addDays, randomDigits } from '@/lib/utils';
 
 /** Importação de extrato OFX (formato SGML/XML dos bancos) */
@@ -31,6 +32,7 @@ export const POST = route('financeiro', 'edit', async ({ ctx, req }) => {
 
 /** Gera um OFX de exemplo com transações compatíveis com títulos em aberto (para testar a conciliação) */
 export const GET = route('financeiro', 'view', async ({ ctx }) => {
+  requireRealOrDemo('OFX de exemplo', 'Baixe o extrato OFX no internet banking do seu banco e use "Importar OFX".');
   const open = await prisma.financialEntry.findMany({ where: { companyId: ctx.companyId, status: 'ABERTO', dueDate: { gte: addDays(new Date(), -20), lte: addDays(new Date(), 10) } }, take: 8, orderBy: { dueDate: 'asc' } });
   const d = (x: Date) => x.toISOString().slice(0, 10).replace(/-/g, '') + '120000[-3:BRT]';
   const trs = open.map((e) => ({ type: e.type === 'RECEBER' ? 'CREDIT' : 'DEBIT', date: e.dueDate > new Date() ? new Date() : e.dueDate, amount: e.type === 'RECEBER' ? e.amount - e.paidAmount : -(e.amount - e.paidAmount), memo: `${e.type === 'RECEBER' ? 'PIX RECEBIDO' : 'PAGTO BOLETO'} ${(e.contactName || e.description).toUpperCase().slice(0, 30)}` }));

@@ -3,7 +3,8 @@
  * integrações de cobrança do Bling: a empresa conecta a conta, o sistema
  * registra a cobrança no provedor, envia ao cliente e dá baixa sozinho quando
  * o pagamento cai (webhook ou sincronização periódica).
- * Sem conta conectada, continua a cobrança simulada (billingData).
+ * Sem conta conectada: cobrança simulada (billingData) só no modo demonstração;
+ * em produção apenas o Pix estático da chave cadastrada (baixa manual).
  */
 import type { FinancialEntry } from '@prisma/client';
 import { prisma } from '@/lib/db';
@@ -13,7 +14,8 @@ import { firstAccount, getAccount, appUrl, webhookUrl } from '../integrations/ac
 import type { AccountCtx } from '../integrations/types';
 import { asaasGateway } from '../integrations/providers/asaas';
 import { mercadoPagoGateway } from '../integrations/providers/mercadopago';
-import { billingData, defaultBankAccount, payEntry, createEntries } from './finance';
+import { billingData, defaultBankAccount, payEntry, createEntries, realPixKey, PAYMENT_HOWTO } from './finance';
+import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
 import { notify } from './notify';
 import { registerJob, enqueue } from './jobs';
 
@@ -124,6 +126,18 @@ export async function createCharge(companyId: string, entryId: string, method?: 
   const amount = round2(e.amount - e.paidAmount);
   const m = method || methodFromPayment(e.paymentMethod);
   const acc = await paymentAccount(companyId);
+  if (!acc && !isDemoMode()) {
+    // Produção sem provedor: não existe boleto/cartão sem registro. Só o Pix estático da chave cadastrada (baixa manual).
+    if (m === 'PIX') {
+      const company = await prisma.company.findUnique({ where: { id: companyId } });
+      const bank = await defaultBankAccount(prisma, companyId, 'CONTA_DIGITAL');
+      if (company && realPixKey(bank)) {
+        const data = billingData(company, bank!, amount, e.dueDate, 'PIX');
+        return { entry: await prisma.financialEntry.update({ where: { id: e.id }, data: { ...CLEAR, ...data } }), simulated: false as const, manual: true as const };
+      }
+    }
+    requireRealOrDemo('Emissão de cobrança (boleto/Pix/cartão)', `${PAYMENT_HOWTO}${m === 'PIX' ? ' Ou cadastre a chave Pix da conta bancária (Finanças → Contas bancárias) para gerar o Pix copia e cola com baixa manual.' : ''}`);
+  }
   if (!acc) {
     // Simulado: boleto FEBRABAN + BR Code gerados localmente
     if (e.boletoLine && e.pixPayload) return { entry: e, simulated: true as const };
@@ -132,7 +146,7 @@ export async function createCharge(companyId: string, entryId: string, method?: 
     if (!company || !bank) return { entry: e, simulated: true as const };
     return { entry: await prisma.financialEntry.update({ where: { id: e.id }, data: billingData(company, bank, amount, e.dueDate) }), simulated: true as const };
   }
-  if (e.provider === acc.provider && covers(e, m)) return { entry: e, simulated: false as const, redirectUrl: m === 'CARTAO' ? e.paymentUrl : null };
+  if (e.provider === acc!.provider && covers(e, m)) return { entry: e, simulated: false as const, redirectUrl: m === 'CARTAO' ? e.paymentUrl : null };
   const gw = gatewayFor(acc.provider)!;
   // Uma cobrança ativa por título: cancela a anterior antes de registrar outra (evita pagamento em dobro)
   if (e.provider && e.providerRef) await cancelAtProvider(companyId, e.provider, e.providerRef).catch(() => {});
@@ -291,7 +305,7 @@ export async function autoCharge(companyId: string, entryIds: string[]) {
       await createCharge(companyId, id);
       n++;
     } catch (err) {
-      await notify(companyId, 'Falha ao emitir cobrança', `${name}: "${e.description}" — ${(err as Error).message}. Mantida a cobrança simulada; use "Emitir cobrança" para tentar de novo.`, { level: 'error', link: '/financeiro/receber' });
+      await notify(companyId, 'Falha ao emitir cobrança', `${name}: "${e.description}" — ${(err as Error).message}. ${isDemoMode() ? 'Mantida a cobrança simulada' : 'Título mantido sem cobrança registrada'}; use "Emitir cobrança" para tentar de novo.`, { level: 'error', link: '/financeiro/receber' });
     }
   }
   return n;

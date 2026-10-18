@@ -6,7 +6,8 @@
  * - Chave de acesso real (mod 11), XML no leiaute 4.00 com assinatura XMLDSig
  *   (certificado A1 instalado) e QR Code v2 da NFC-e
  * - Quem autoriza depende de Company.fiscalProvider (como no Bling):
- *   SIMULADO  → "SEFAZ" simulada (validações com códigos reais, protocolo fictício)
+ *   SIMULADO  → "SEFAZ" simulada (validações com códigos reais, protocolo fictício) —
+ *               SÓ no modo demonstração; em produção a emissão é bloqueada (requireRealFiscal)
  *   SEFAZ     → webservices oficiais com o certificado A1 (homologação ou produção)
  *   FOCUS_NFE → API da Focus NFe (conta conectada em Integrações)
  * - Contingência: NFC-e offline (tpEmis 9) e SVC-AN/SVC-RS para NF-e (tpEmis 6/7)

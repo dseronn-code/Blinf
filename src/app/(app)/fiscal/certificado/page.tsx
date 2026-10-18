@@ -43,7 +43,7 @@ export default function Certificate() {
   const installed = !!c?.certValidUntil;
   const valid = installed && new Date(c.certValidUntil) > new Date();
   const days = installed ? Math.ceil((new Date(c.certValidUntil).getTime() - Date.now()) / 86400000) : 0;
-  const mode = MODES[c?.sefazMode] || MODES.SIMULADO;
+  const mode = !demoMode && (!c?.sefazMode || c.sefazMode === 'SIMULADO') ? (['SEM CERTIFICADO', 'gray', 'Nenhum certificado instalado: notas não podem ser assinadas nem transmitidas à SEFAZ.'] as [string, string, string]) : MODES[c?.sefazMode] || MODES.SIMULADO;
   const contingency = c?.sefazMode === 'CONTINGENCIA';
   const pending: number = pend?.total ?? 0;
   const real = c?.fiscalProvider && c.fiscalProvider !== 'SIMULADO';
@@ -179,7 +179,7 @@ export default function Certificate() {
             <KV label="Ambiente" value={!real ? (demoMode ? '2 - Homologação (simulado)' : '— (sem emissor)') : production ? '1 - Produção' : '2 - Homologação'} />
             <KV label="Arquivo .pfx armazenado" value={c?.hasPfx ? 'Sim' : 'Não'} />
             <p className="col-span-2 text-xs text-muted-foreground">{mode[2]}</p>
-            {installed && <Button variant="outline" className="col-span-2" disabled={busy} onClick={() => confirm('Remover o certificado? As notas voltarão a ser geradas sem assinatura (modo SIMULADO).') && act('DELETE', '/api/company/certificate', undefined, 'Certificado removido')}><Trash2 /> Remover certificado</Button>}
+            {installed && <Button variant="outline" className="col-span-2" disabled={busy} onClick={() => confirm(demoMode ? 'Remover o certificado? As notas voltarão a ser geradas sem assinatura (modo SIMULADO).' : 'Remover o certificado? Sem certificado não é possível emitir pela SEFAZ direta.') && act('DELETE', '/api/company/certificate', undefined, 'Certificado removido')}><Trash2 /> Remover certificado</Button>}
           </CardContent>
         </Card>
 

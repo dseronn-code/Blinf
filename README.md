@@ -29,7 +29,7 @@ Variáveis opcionais (crie um `.env` ao lado do `docker-compose.yml`):
 ANTHROPIC_API_KEY=sk-ant-...      # assistente de IA com Claude (sem chave usa o motor local)
 NEXTAUTH_SECRET=um-segredo-forte
 NEXTAUTH_URL=https://erp.suaempresa.com.br
-WEBHOOKS_SIMULATE_ONLY=true       # false = webhooks fazem POST real para as URLs cadastradas
+WEBHOOKS_SIMULATE_ONLY=false      # true = webhooks não chamam URLs externas (só para testes)
 SMTP_HOST=smtp.seuprovedor.com    # e-mails reais (senão ficam na caixa de saída como SIMULADO)
 SMTP_USER=... SMTP_PASS=... SMTP_FROM="Loja <nao-responda@loja.com.br>"
 ACCOUNTANT_EMAIL=contador@escritorio.com.br   # recebe XML/DANFE das notas autorizadas

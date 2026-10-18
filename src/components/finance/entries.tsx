@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { Plus, CheckCircle2, FileText, Link2, Download, Undo2, XCircle, Copy, Pencil, Trash2, Handshake, Receipt, ExternalLink, Ban } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, useApi, useAction, qs, openFile } from '@/lib/api';
-import { PageHeader, Filters, SearchBox, Chips, DataTable, Pagination, StatCard, Field } from '@/components/common/page';
+import { PageHeader, Filters, SearchBox, Chips, DataTable, Pagination, StatCard, Field, useDemoMode } from '@/components/common/page';
 import { EntityPicker, contactOption } from '@/components/common/picker';
 import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/input';
@@ -32,9 +32,10 @@ export function EntriesPage({ type }: { type: 'RECEBER' | 'PAGAR' }) {
   const { data: pg } = useApi<any>(type === 'RECEBER' ? '/api/finance/payment-links' : null);
   const gateway: { provider: string; name: string } | null = pg?.gateway || null;
   const act = useAction();
+  const demo = useDemoMode();
   const emitCharge = async (r: any) => {
-    const x: any = await act('POST', `/api/finance/entries/${r.id}/charge`, {}, false);
-    if (x) toast.success(x.simulated ? 'Cobrança simulada gerada (nenhum provedor conectado em Integrações → Contas)' : `Cobrança registrada no ${GATEWAY_NAME[x.provider] || x.provider}`);
+    const x: any = await act('POST', `/api/finance/entries/${r.id}/charge`, !gateway && !demo ? { method: 'PIX' } : {}, false);
+    if (x) toast.success(x.simulated ? 'Cobrança simulada gerada (nenhum provedor conectado em Integrações → Contas)' : x.manual ? 'Pix copia e cola gerado para a chave da sua conta — a baixa é manual (confira o extrato)' : `Cobrança registrada no ${GATEWAY_NAME[x.provider] || x.provider}`);
   };
   const [newE, setNewE] = useState<any>(null);
   const [payE, setPayE] = useState<any>(null);
@@ -110,7 +111,7 @@ export function EntriesPage({ type }: { type: 'RECEBER' | 'PAGAR' }) {
         { key: 'paymentMethod', header: 'Forma', cell: (r: any) => <span className="text-xs">{PAYMENT_METHODS[r.paymentMethod] || r.paymentMethod || '—'}</span> },
         { key: 'amount', header: 'Valor', align: 'right', cell: (r: any) => money(r.amount) },
         { key: 'open', header: 'Em aberto', align: 'right', cell: (r: any) => <b>{money(r.status === 'PAGO' ? 0 : r.amount - r.paidAmount)}</b> },
-        { key: 'status', header: 'Situação', cell: (r: any) => <div className="flex flex-col items-start gap-0.5"><StatusBadge status={r.effectiveStatus} />{isR && (r.provider ? <Badge tone="blue">{GATEWAY_NAME[r.provider] || r.provider}</Badge> : (r.boletoLine || r.pixPayload) && r.status !== 'PAGO' ? <Badge tone="yellow">Cobrança simulada</Badge> : null)}</div> },
+        { key: 'status', header: 'Situação', cell: (r: any) => <div className="flex flex-col items-start gap-0.5"><StatusBadge status={r.effectiveStatus} />{isR && (r.provider ? <Badge tone="blue">{GATEWAY_NAME[r.provider] || r.provider}</Badge> : !demo ? (['ABERTO', 'PARCIAL'].includes(r.status) && ['BOLETO', 'PIX'].includes(r.paymentMethod) ? (r.pixPayload ? <Badge tone="gray">Pix estático · baixa manual</Badge> : <Badge tone="yellow">Sem cobrança registrada</Badge>) : null) : (r.boletoLine || r.pixPayload) && r.status !== 'PAGO' ? <Badge tone="yellow">Cobrança simulada</Badge> : null)}</div> },
         { key: 'a', header: '', align: 'right', cell: (r: any) => (
           <div className="flex justify-end gap-1">
             {['ABERTO', 'PARCIAL'].includes(r.status) && <Button size="sm" variant="outline" onClick={() => setPayE({ ...r, form: { amount: round2(r.amount - r.paidAmount), date: toInputDate(new Date()), bankAccountId: banks?.rows.find((b: any) => b.isDefault)?.id, method: r.paymentMethod, interest: 0, fine: 0, discount: 0 } })}><CheckCircle2 /> {isR ? 'Receber' : 'Pagar'}</Button>}
@@ -118,8 +119,8 @@ export function EntriesPage({ type }: { type: 'RECEBER' | 'PAGAR' }) {
               <DropdownMenuTrigger asChild><Button size="icon" variant="ghost">⋯</Button></DropdownMenuTrigger>
               <DropdownMenuContent>
                 {['ABERTO', 'PARCIAL'].includes(r.status) && <DropdownMenuItem onSelect={() => edit(r)}><Pencil /> Editar / rateio</DropdownMenuItem>}
-                {isR && <DropdownMenuItem onSelect={() => openFile(`/api/finance/entries/${r.id}/boleto`)}><FileText /> {r.provider ? `Boleto / fatura (${GATEWAY_NAME[r.provider] || r.provider})` : 'Boleto (PDF)'}</DropdownMenuItem>}
-                {isR && ['ABERTO', 'PARCIAL'].includes(r.status) && !r.provider && <DropdownMenuItem onSelect={() => emitCharge(r)}><Receipt /> {gateway ? `Emitir cobrança (${gateway.name})` : 'Emitir cobrança (simulada)'}</DropdownMenuItem>}
+                {isR && (demo || r.provider) && <DropdownMenuItem onSelect={() => openFile(`/api/finance/entries/${r.id}/boleto`)}><FileText /> {r.provider ? `Boleto / fatura (${GATEWAY_NAME[r.provider] || r.provider})` : 'Boleto (PDF)'}</DropdownMenuItem>}
+                {isR && ['ABERTO', 'PARCIAL'].includes(r.status) && !r.provider && <DropdownMenuItem onSelect={() => emitCharge(r)}><Receipt /> {gateway ? `Emitir cobrança (${gateway.name})` : demo ? 'Emitir cobrança (simulada)' : 'Gerar Pix copia e cola (baixa manual)'}</DropdownMenuItem>}
                 {isR && r.provider && r.paymentUrl && <DropdownMenuItem onSelect={() => window.open(r.paymentUrl, '_blank')}><ExternalLink /> Abrir no {GATEWAY_NAME[r.provider] || r.provider}</DropdownMenuItem>}
                 {isR && r.provider && ['ABERTO', 'PARCIAL'].includes(r.status) && <DropdownMenuItem onSelect={() => confirm(`Cancelar a cobrança no ${GATEWAY_NAME[r.provider] || r.provider}? O título continua em aberto.`) && act('POST', `/api/finance/entries/${r.id}/cancel-charge`, {}, 'Cobrança cancelada')}><Ban /> Cancelar cobrança</DropdownMenuItem>}
                 {isR && r.provider && r.paidAmount > 0 && <DropdownMenuItem onSelect={() => confirm(`Estornar o pagamento no ${GATEWAY_NAME[r.provider] || r.provider}? O valor volta ao cliente e o título é reaberto.`) && act('POST', `/api/finance/entries/${r.id}/refund-charge`, {}, 'Pagamento estornado')}><Undo2 /> Estornar no {GATEWAY_NAME[r.provider] || r.provider}</DropdownMenuItem>}
@@ -206,7 +207,7 @@ export function EntriesPage({ type }: { type: 'RECEBER' | 'PAGAR' }) {
 
       <Dialog open={!!link} onOpenChange={(o) => !o && setLink(null)} title="Link de pagamento criado" size="sm">
         {link && <div className="space-y-2 text-sm">
-          <p>Envie ao cliente. {gateway ? `O pagamento é processado pelo ${gateway.name} e a conta é baixada automaticamente.` : 'Ao pagar (simulado), a conta é baixada automaticamente.'}</p>
+          <p>Envie ao cliente. {gateway ? `O pagamento é processado pelo ${gateway.name} e a conta é baixada automaticamente.` : demo ? 'Ao pagar (simulado), a conta é baixada automaticamente.' : 'O cliente paga o Pix direto na chave da sua conta; confira o extrato e dê a baixa manualmente.'}</p>
           <div className="flex gap-2"><Input readOnly value={`${typeof window !== 'undefined' ? window.location.origin : ''}/pagar/${link.slug}`} /><Button variant="outline" size="icon" onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/pagar/${link.slug}`); toast.success('Copiado'); }}><Copy /></Button></div>
           <Button asChild className="w-full"><a href={`/pagar/${link.slug}`} target="_blank">Abrir página de pagamento</a></Button>
         </div>}

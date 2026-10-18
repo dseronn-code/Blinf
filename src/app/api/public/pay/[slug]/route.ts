@@ -4,6 +4,7 @@ import { emit } from '@/server/events';
 import { toErrorResponse, HttpError } from '@/server/http';
 import { defaultBankAccount } from '@/server/services/finance';
 import { paymentAccount, gatewayFor } from '@/server/services/payments';
+import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
 
 type P = { params: Promise<{ slug: string }> };
 
@@ -17,12 +18,13 @@ export async function GET(_req: Request, { params }: P) {
   const acc = await paymentAccount(link.companyId);
   const e = link.entryId ? await prisma.financialEntry.findUnique({ where: { id: link.entryId } }) : null;
   const charge = e?.provider ? { provider: e.provider, providerName: gatewayFor(e.provider)?.name || e.provider, paymentUrl: e.paymentUrl, boletoLine: e.boletoLine, pixPayload: e.pixPayload, card: e.provider === 'MERCADO_PAGO' ? !!e.providerRef?.startsWith('pref-') : !!e.paymentUrl && !!e.boletoLine === !!e.pixPayload } : null;
-  return NextResponse.json({ ...link, ...(charge?.pixPayload ? { pixPayload: charge.pixPayload } : {}), company, gateway: acc ? gatewayFor(acc.provider)?.name || acc.provider : null, charge, entryPaid: e?.status === 'PAGO' });
+  return NextResponse.json({ ...link, ...(charge?.pixPayload ? { pixPayload: charge.pixPayload } : {}), company, gateway: acc ? gatewayFor(acc.provider)?.name || acc.provider : null, charge, entryPaid: e?.status === 'PAGO', demo: isDemoMode() });
 }
 
-/** Simula a confirmação do pagamento pelo PSP (Pix/boleto/cartão) — só sem provedor real conectado */
+/** Simula a confirmação do pagamento pelo PSP (Pix/boleto/cartão) — só no modo demonstração, sem provedor real conectado */
 export async function POST(req: Request, { params }: P) {
   try {
+    requireRealOrDemo('Simulação de pagamento', 'O pagamento é confirmado pelo provedor de cobrança (Asaas/Mercado Pago) ou, no Pix estático, registrado pela empresa ao conferir o extrato.');
     const { slug } = await params;
     const body = await req.json().catch(() => ({}));
     const link = await prisma.paymentLink.findUnique({ where: { slug } });

@@ -354,7 +354,8 @@ export async function markManualShipment(actor: Actor, shipmentId: string, body:
   if (!isManualShipment(s!)) fail(400, 'Somente envios de frete próprio/retirada são atualizados manualmente');
   if (['ENTREGUE', 'CANCELADO'].includes(s!.status)) fail(400, 'Envio já finalizado');
   const code = body.trackingCode != null ? String(body.trackingCode).trim().toUpperCase() || null : undefined;
-  const target = body.status || (s!.status === 'ETIQUETA_GERADA' ? 'POSTADO' : 'ENTREGUE');
+  // Só o código de rastreio informado: não muda a situação; sem nada → próxima etapa (postado → entregue)
+  const target = body.status || (code !== undefined ? s!.status : s!.status === 'ETIQUETA_GERADA' ? 'POSTADO' : 'ENTREGUE');
   if (!['POSTADO', 'ENTREGUE'].includes(target) && !(target === s!.status && code !== undefined)) fail(400, 'Situação inválida (use POSTADO ou ENTREGUE)');
   const events = [...((s!.events as object[]) || [])];
   if (code !== undefined && code !== s!.trackingCode) events.push({ date: new Date().toISOString(), status: s!.status, description: code ? `Código de rastreio informado: ${code}` : 'Código de rastreio removido', location: '' });

@@ -11,6 +11,19 @@ import { fail } from '../errors';
 import { nextNumber } from '../sequence';
 import { createEntries, payEntry, billingData, defaultBankAccount } from './finance';
 import type { Actor } from './sales';
+import { isDemoMode, requireRealOrDemo } from '@/lib/demo';
+
+/**
+ * Conta bancária da cobrança CNAB. No modo demonstração vale a conta digital fictícia (999);
+ * em produção é obrigatória uma conta com código de banco real (FEBRABAN).
+ */
+async function cnabBankAccount(companyId: string) {
+  if (isDemoMode()) return defaultBankAccount(prisma, companyId, 'CONTA_DIGITAL');
+  const where = { companyId, active: true, type: { notIn: ['CAIXA', 'CARTAO'] }, bankCode: { not: null }, NOT: { bankCode: { in: ['', '999'] } } };
+  const bank = (await prisma.bankAccount.findFirst({ where: { ...where, isDefault: true } })) || (await prisma.bankAccount.findFirst({ where, orderBy: { createdAt: 'asc' } }));
+  if (!bank) requireRealOrDemo('Cobrança bancária CNAB', 'Cadastre a conta corrente da empresa com o código do banco (ex.: 001, 237, 341), agência e conta em Finanças → Contas bancárias.');
+  return bank;
+}
 
 // ---------------------------------------------------------------------------
 // CNAB 400
@@ -35,7 +48,7 @@ const cents = (v: number) => Math.round(v * 100);
 /** Gera o arquivo de remessa CNAB 400 com os boletos selecionados (ou todos os em aberto) */
 export async function cnabRemessa(actor: Actor, entryIds?: string[]) {
   const company = (await prisma.company.findUnique({ where: { id: actor.companyId } }))!;
-  const bank = await defaultBankAccount(prisma, actor.companyId, 'CONTA_DIGITAL');
+  const bank = await cnabBankAccount(actor.companyId);
   const entries = await prisma.financialEntry.findMany({
     where: { companyId: actor.companyId, type: 'RECEBER', status: { in: ['ABERTO', 'PARCIAL'] }, ...(entryIds?.length ? { id: { in: entryIds } } : { paymentMethod: 'BOLETO' }) },
     orderBy: { dueDate: 'asc' },
@@ -46,7 +59,11 @@ export async function cnabRemessa(actor: Actor, entryIds?: string[]) {
   const L: string[] = [];
   L.push(line().set(1, 1, '0').set(2, 1, '1').set(3, 7, 'REMESSA').set(10, 2, '01', true).set(12, 15, 'COBRANCA').set(27, 20, `${onlyDigits(bank?.agency)}${onlyDigits(bank?.accountNumber)}`, true).set(47, 30, company.name).set(77, 3, bank?.bankCode || '999', true).set(80, 15, (bank?.bankName || 'GESTAOPRO BANK').slice(0, 15)).set(95, 6, ddmmyy(new Date())).set(109, 2, 'MX').set(111, 7, seq, true).set(395, 6, 1, true).toString());
   for (const e of entries) {
-    if (!e.boletoNumber) Object.assign(e, await prisma.financialEntry.update({ where: { id: e.id }, data: billingData(company, bank!, e.amount - e.paidAmount, e.dueDate) }));
+    if (!e.boletoNumber) {
+      // Demonstração: boleto simulado completo. Produção: só o "nosso número" sequencial da empresa — linha digitável/código de barras vêm do banco
+      const data = isDemoMode() ? billingData(company, bank!, e.amount - e.paidAmount, e.dueDate) : { boletoNumber: String(await nextNumber(prisma, actor.companyId, 'NOSSO_NUMERO', 1)).padStart(11, '0') };
+      Object.assign(e, await prisma.financialEntry.update({ where: { id: e.id }, data }));
+    }
     const c = e.contactId ? await prisma.contact.findUnique({ where: { id: e.contactId } }) : null;
     const doc = onlyDigits(c?.document);
     L.push(
@@ -61,6 +78,7 @@ export async function cnabRemessa(actor: Actor, entryIds?: string[]) {
 
 /** Gera um arquivo de RETORNO de exemplo (liquidação de parte dos boletos de uma remessa) */
 export function cnabRetornoSample(remessa: string) {
+  requireRealOrDemo('Retorno simulado do banco', 'Baixe o arquivo de retorno no internet banking da sua conta de cobrança e use "Processar retorno".');
   const lines = remessa.split(/\r?\n/).filter((l) => l.startsWith('1'));
   const L: string[] = [line().set(1, 1, '0').set(2, 1, '2').set(3, 7, 'RETORNO').set(10, 2, '01', true).set(12, 15, 'COBRANCA').set(95, 6, ddmmyy(new Date())).set(395, 6, 1, true).toString()];
   lines.forEach((l, i) => {
@@ -78,7 +96,7 @@ const OCORRENCIAS: Record<string, string> = { '02': 'Entrada confirmada', '03': 
 export async function cnabRetorno(actor: Actor, content: string) {
   const lines = content.split(/\r?\n/).filter((l) => l.length >= 300);
   if (!lines.length || !lines[0].startsWith('02RETORNO')) fail(400, 'Arquivo de retorno CNAB 400 inválido');
-  const bank = await defaultBankAccount(prisma, actor.companyId, 'CONTA_DIGITAL');
+  const bank = await cnabBankAccount(actor.companyId);
   const results = [];
   for (const l of lines.filter((x) => x.startsWith('1'))) {
     const control = l.slice(37, 62).trim();
